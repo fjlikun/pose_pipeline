@@ -10,8 +10,8 @@ from pose_blender.sequence import load_sequence, load_mapping, transformed_point
 
 
 def main(options):
-    sequence = load_sequence(options['poses'])
-    mapping = load_mapping(options['mapping'])
+    sequence = options.get('_sequence') or load_sequence(options['poses'])
+    mapping = options.get('_mapping') or load_mapping(options['mapping'])
     rig = bpy.data.objects.get(mapping['armature'])
     if not rig or rig.type != 'ARMATURE':
         raise ValueError('Configured armature not found')
@@ -110,6 +110,8 @@ def main(options):
     scene.frame_set(1)
     scene['pose_pipeline_schema'] = '1.0'
     scene['pose_pipeline_limitations'] = 'Direction retarget only; no root motion, contact, fingers or recovered axial twist. Missing frames held. Interpolation is not motion reconstruction.'
+    if options.get('_bake_only'):
+        return {'frames': diagnostics, 'mapped_bones': len(entries), 'baked_bones': len(rig.pose.bones)}
     output = Path(options['output_blend'])
     if output.resolve() == Path(options['input_blend']).resolve() or output.exists():
         raise ValueError('Refusing to overwrite source or existing output')

@@ -49,7 +49,7 @@ pose-blender --blender "/path/to/blender" \
 
 交接文件为 schema 1.0 JSON：原视频 fps、源帧号、真实 PTS 相对时间、70×3 有限关键点（米）、缺失状态及坐标元信息。不是 127 个 MHR 骨架关节，也不是 Blender 骨骼旋转。
 
-时间使用 `1 + time_seconds × 输出fps`，保留抽帧间隔；坐标从相机轴映射 `(x,y,z)→(x,z,-y)` 恰好一次。不要在导入前再次手动换轴。输出不含 `pred_cam_t`，不表示真实世界根运动。详细字段及缺失帧规则见两份 README。
+时间使用 `1 + time_seconds × 输出fps`，保留抽帧间隔；坐标从相机轴映射 `(x,y,z)→(x,z,-y)` 恰好一次。不要在导入前再次手动换轴。基础70点不混入平移；新版多人输出通过独立 `scene_position` 字段提供近似相机相对位置，仍不表示真实世界根运动。详细字段及缺失帧规则见两份 README。
 
 ## 验证状态与预期
 
@@ -90,6 +90,31 @@ Notebook 现在包含依赖安装、固定版本 SAM/DINOv3 源码准备、模�
 
 安装辅助工具覆盖官方固定版本 INSTALL.md 的35项Python依赖，冻结已有包版本，仅补充通过预检的缺失wheel。它不安装、升级或替换PyTorch/CUDA，也不以源码包构建绕过保护。缺少既有torch/torchvision、依赖冲突或无可用wheel会停止。依赖与二进制ABI仍需在目标电脑实际验证。
 
-多人功能现已实现于 extractor/multi_person.py：torchvision Faster R-CNN person检测、预测bbox IoU关联、每个track独立JSON1.0与NPZ。原Blender driver每次导入一个track的motion.json；不自动创建共享多人场景，也不恢复世界位移。Notebook包含依赖、git同步、SAM和detector权重下载、GPU默认/CPU注释补丁及推理单元。检测/跟踪真实视频精度与GPU端到端尚未实测。
+多人功能现已实现于 extractor/multi_person.py：torchvision Faster R-CNN person检测、预测bbox IoU关联、每个track独立JSON1.0与NPZ。原Blender driver仍可每次导入一个track的motion.json；新增shared_cli可以创建共享多人场景，但不恢复真实世界位移。Notebook包含依赖、git同步、SAM和detector权重下载、GPU默认/CPU注释补丁及推理单元。检测/跟踪真实视频精度与GPU端到端尚未实测。
 
 多人测试：`python extractor/tests/test_multi_person.py`。依赖PyAV/NumPy，使用真实临时视频编解码与模拟detector/SAM，不能视为真实模型精度验证。
+
+## 共享多人场景：当前推荐流程
+
+1. 在 extractor 目录打开 Notebook，完成路径和模型配置，使用多人模式运行视频提取。新输出含各track的 `motion.json`、NPZ、总 `manifest.json` 和 `camera_frames.json`，位置由 `scene_position.py` 校验。只有CPU静态拼图示例经过真实模型验证，真实多人视频与GPU端到端尚未验证。
+2. 如果已有多人输出没有 scene_position，先复制整个输出目录，再运行 `python extractor/scene_position.py /path/to/copied_export`，从其原始NPZ增补位置；缺少相机字段时明确标记不可用，不编造深度。
+3. 在工程根目录运行下面命令。自行准备原始绑定角色文件和Blender，路径均需替换。
+
+```bash
+python -m pip install -e ./blender_driver
+python -m pose_blender.shared_cli \
+  --blender "/path/to/blender" \
+  --input-blend "/path/to/original_actor.blend" \
+  --manifest "/path/to/extracted/manifest.json" \
+  --mapping "blender_driver/configs/actor_template.json" \
+  --track-ids 1,2 --camera-view overview \
+  --output-blend "shared_animation.blend"
+```
+
+track-ids应按自己的manifest选择；省略时导入全部有效track，不代表自动识别真人身份。每个角色有独立骨架、网格、材质和动画，共用视频时间轴。相机相对位置是单目模型估计，没有实测尺度或相机运动补偿；不是世界坐标重建。默认共同角色尺寸拟合不是逐人独立归一化。
+
+`overview`是便于完整观察人物的正交总览，**不是原镜头复原**；`matched`保留按模型焦距估计的源视角，近景可能裁切。无可靠位置的轨迹会按规则隐藏，详见 blender_driver/README.md。
+
+单独交付的 `two_people_overview.blend` 与第1/7帧PNG是演示与验收材料：来源是静态截图拼接的双区域幻灯片，仅0和0.5秒两个推理采样，并非真实连续双人动作视频。角色倒置或悬空保留推理结果，未人为纠正。PNG使用Workbench检查几何和布局，不是照片级灯光材质验收。完整独立结果见 `INDEPENDENT_REVIEW.md`。这些演示文件不嵌入源码ZIP。
+
+当前测试：提取器49项、Blender driver13项。详细测试性质和未验证范围见QA记录。

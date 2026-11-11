@@ -9,5 +9,6 @@ requires-python = ">=3.10"
 dependencies = []
 [project.scripts]
 pose-blender = "pose_blender.cli:main"
+pose-blender-shared = "pose_blender.shared_cli:main"
 [tool.setuptools.packages.find]
 include = ["pose_blender*"]

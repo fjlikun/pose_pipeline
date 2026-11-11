@@ -6,6 +6,7 @@ import os
 import numpy as np
 from extract_video import COORDINATES, validate_document
 from npz_archive import NPZArchive
+from scene_position import estimate, unavailable, finalize_sample, METADATA
 
 
 def atomic_json(path,data):
@@ -119,7 +120,7 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                   source_video=src.name,detector=getattr(detector,'metadata',{'model':'custom detector'}),tracking=dict(method='greedy_constant_velocity_iou',iou_threshold=iou_threshold,
                   max_missing_seconds=max_missing_seconds,appearance_reidentification=False),metadata=metadata or {})
     atomic_json(root/'manifest.json',manifest)
-    records={};archives={};sample_count=0;first_pts=None;previous=None
+    records={};archives={};sample_count=0;first_pts=None;previous=None;camera_frames=[]
     with av.open(str(src)) as container:
         if not container.streams.video: raise ValueError('No video stream')
         stream=container.streams.video[0];rate=stream.average_rate or stream.guessed_rate
@@ -143,6 +144,7 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
             matches,active,expired=tracker.update(detections,t)
             states=dict(expired)  # Integer IDs preserved; expiration recorded once.
             states.update(active)
+            sample_entries=[];sample_predictions={}
             for track_id,state in sorted(states.items()):
                 if track_id not in records:
                     folder=root/f'track_{track_id:04d}';folder.mkdir()
@@ -173,8 +175,13 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                     except Exception as exc:
                         if not continue_on_error: raise
                         entry.update(status='error',error=f'{type(exc).__name__}: {exc}')
-                if track_id in archives: archives[track_id].append(entry,prediction)
+                entry['scene_position']=estimate(prediction,width,height) if entry['status']=='ok' else unavailable('pose_'+entry['status'],width,height)
+                sample_entries.append(entry)
+                sample_predictions[track_id]=prediction
                 record['frames'].append(entry)
+            camera_frames.append(finalize_sample(sample_entries,width,height,frame_index,t))
+            for entry in sample_entries:
+                if entry['track_id'] in archives: archives[entry['track_id']].append(entry,sample_predictions[entry['track_id']])
             sample=dict(frame_index=frame_index,time_seconds=t,detection_count=len(detections),
                         observed_track_ids=sorted(matches),active_track_ids=sorted(active),expired_track_ids=sorted(expired))
             with (root/'samples.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(sample,allow_nan=False)+'\n')
@@ -182,6 +189,7 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
             print(f'frame={frame_index} time={t:.6f}s detected={len(detections)} tracks={sorted(matches)}',flush=True)
             if max_frames is not None and sample_count>=max_frames: break
     common['source_first_pts_seconds']=first_pts
+    common['scene_position']=METADATA
     for track_id,record in sorted(records.items()):
         meta=dict(common,track_id=track_id,first_detection_seconds=record['born'],last_detection_seconds=record['last_detection'])
         successes=sum(f['status']=='ok' for f in record['frames'])
@@ -203,6 +211,8 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
     manifest.update(complete=True,sampled_frames=sample_count,fps=fps,width=width,height=height,
                     source_first_pts_seconds=first_pts,status='no_samples' if sample_count==0 else ('ok' if any(r['successful_frames'] for r in manifest['tracks']) else 'no_valid_people'))
     if not (root/'samples.jsonl').exists(): (root/'samples.jsonl').touch()
+    atomic_json(root/'camera_frames.json',camera_frames)
+    manifest.update(scene_position_metadata=METADATA,camera_frames_file='camera_frames.json')
     atomic_json(root/'manifest.json',manifest)
     return manifest
 
