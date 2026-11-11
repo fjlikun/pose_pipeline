@@ -1,0 +1,7 @@
+# Install torch + torchvision first using the matching official PyTorch CPU/CUDA wheel.
+av>=14,<20
+numpy>=1.26,<3
+opencv-python>=4.8
+notebook>=7
+ipykernel>=6
+# SAM 3D Body dependencies are managed separately: see README and upstream INSTALL.md.

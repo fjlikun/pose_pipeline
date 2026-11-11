@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "pose-blender-driver"
+version = "0.1.0"
+description = "Independent JSON pose sequence to Blender skeletal animation"
+requires-python = ">=3.10"
+dependencies = []
+[project.scripts]
+pose-blender = "pose_blender.cli:main"
+[tool.setuptools.packages.find]
+include = ["pose_blender*"]

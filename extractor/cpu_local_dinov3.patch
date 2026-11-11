@@ -1,0 +1,99 @@
+diff --git a/sam_3d_body/build_models.py b/sam_3d_body/build_models.py
+index faebd6c..951a278 100644
+--- a/sam_3d_body/build_models.py
++++ b/sam_3d_body/build_models.py
+@@ -28,7 +28,7 @@ def load_sam_3d_body(checkpoint_path: str = "", device: str = "cuda", mhr_path:
+     # Initialze the model
+     model = SAM3DBody(model_cfg)
+ 
+-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
++    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True, mmap=True)
+     if "state_dict" in checkpoint:
+         state_dict = checkpoint["state_dict"]
+     else:
+diff --git a/sam_3d_body/models/backbones/dinov3.py b/sam_3d_body/models/backbones/dinov3.py
+index bd0103a..c54c025 100644
+--- a/sam_3d_body/models/backbones/dinov3.py
++++ b/sam_3d_body/models/backbones/dinov3.py
+@@ -13,9 +13,9 @@ class Dinov3Backbone(nn.Module):
+         self.cfg = cfg
+ 
+         self.encoder = torch.hub.load(
+-            "facebookresearch/dinov3",
++            __import__("os").environ["SAM3D_DINOV3_REPO"],
+             self.name,
+-            source="github",
++            source="local",
+             pretrained=False,
+             drop_path=self.cfg.MODEL.BACKBONE.DROP_PATH_RATE,
+         )
+diff --git a/sam_3d_body/models/meta_arch/sam3d_body.py b/sam_3d_body/models/meta_arch/sam3d_body.py
+index 165106f..99d5371 100644
+--- a/sam_3d_body/models/meta_arch/sam3d_body.py
++++ b/sam_3d_body/models/meta_arch/sam3d_body.py
+@@ -1031,7 +1031,7 @@ class SAM3DBody(BaseModel):
+                 torch.meshgrid(torch.arange(H), torch.arange(W), indexing="xy"), dim=2
+             )[None, None, :, :, :]
+             .repeat(B, N, 1, 1, 1)
+-            .cuda()
++            .to(self.device)
+         )  # B x N x H x W x 2
+         meshgrid_xy = (
+             meshgrid_xy / batch["affine_trans"][:, :, None, None, [0, 1], [0, 1]]
+@@ -1243,7 +1243,7 @@ class SAM3DBody(BaseModel):
+         batch_lhand = prepare_batch(
+             flipped_img, transform_hand, left_xyxy, cam_int=cam_int.clone()
+         )
+-        batch_lhand = recursive_to(batch_lhand, "cuda")
++        batch_lhand = recursive_to(batch_lhand, self.device)
+         lhand_output = self.forward_step(batch_lhand, decoder_type="hand")
+ 
+         # Unflip output
+@@ -1279,17 +1279,17 @@ class SAM3DBody(BaseModel):
+         batch_rhand = prepare_batch(
+             img, transform_hand, right_xyxy, cam_int=cam_int.clone()
+         )
+-        batch_rhand = recursive_to(batch_rhand, "cuda")
++        batch_rhand = recursive_to(batch_rhand, self.device)
+         rhand_output = self.forward_step(batch_rhand, decoder_type="hand")
+ 
+         # Step 3. replace hand pose estimation from the body decoder.
+         ## CRITERIA 1: LOCAL WRIST POSE DIFFERENCE
+         joint_rotations = pose_output["mhr"]["joint_global_rots"]
+         ### Get lowarm
+-        lowarm_joint_idxs = torch.LongTensor([76, 40]).cuda()  # left, right
++        lowarm_joint_idxs = torch.LongTensor([76, 40]).to(self.device)  # left, right
+         lowarm_joint_rotations = joint_rotations[:, lowarm_joint_idxs]  # B x 2 x 3 x 3
+         ### Get zero-wrist pose
+-        wrist_twist_joint_idxs = torch.LongTensor([77, 41]).cuda()  # left, right
++        wrist_twist_joint_idxs = torch.LongTensor([77, 41]).to(self.device)  # left, right
+         wrist_zero_rot_pose = (
+             lowarm_joint_rotations
+             @ self.head_pose.joint_rotation[wrist_twist_joint_idxs]
+@@ -1505,11 +1505,11 @@ class SAM3DBody(BaseModel):
+         )[1]
+ 
+         # Get lowarm
+-        lowarm_joint_idxs = torch.LongTensor([76, 40]).cuda()  # left, right
++        lowarm_joint_idxs = torch.LongTensor([76, 40]).to(self.device)  # left, right
+         lowarm_joint_rotations = joint_rotations[:, lowarm_joint_idxs]  # B x 2 x 3 x 3
+ 
+         # Get zero-wrist pose
+-        wrist_twist_joint_idxs = torch.LongTensor([77, 41]).cuda()  # left, right
++        wrist_twist_joint_idxs = torch.LongTensor([77, 41]).to(self.device)  # left, right
+         wrist_zero_rot_pose = (
+             lowarm_joint_rotations
+             @ self.head_pose.joint_rotation[wrist_twist_joint_idxs]
+diff --git a/sam_3d_body/sam_3d_body_estimator.py b/sam_3d_body/sam_3d_body_estimator.py
+index e22652e..ac0dbe9 100644
+--- a/sam_3d_body/sam_3d_body_estimator.py
++++ b/sam_3d_body/sam_3d_body_estimator.py
+@@ -157,7 +157,7 @@ class SAM3DBodyEstimator:
+         batch = prepare_batch(img, self.transform, boxes, masks, masks_score)
+ 
+         #################### Run model inference on an image ####################
+-        batch = recursive_to(batch, "cuda")
++        batch = recursive_to(batch, self.device)
+         self.model._initialize_batch(batch)
+ 
+         # Handle camera intrinsics

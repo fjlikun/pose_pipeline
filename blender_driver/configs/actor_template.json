@@ -1,0 +1,116 @@
+{
+  "armature": "角色身体绑定",
+  "bones": [
+    {
+      "bone": "DEF-spine",
+      "head": [
+        9,
+        10
+      ],
+      "tail": [
+        5,
+        6
+      ],
+      "x_hint": [
+        [
+          5
+        ],
+        [
+          6
+        ]
+      ]
+    },
+    {
+      "bone": "DEF-spine.006",
+      "head": [
+        69
+      ],
+      "tail": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "x_hint": [
+        [
+          3
+        ],
+        [
+          4
+        ]
+      ]
+    },
+    {
+      "bone": "DEF-upper_arm.L",
+      "head": [
+        5
+      ],
+      "tail": [
+        7
+      ]
+    },
+    {
+      "bone": "DEF-forearm.L",
+      "head": [
+        7
+      ],
+      "tail": [
+        62
+      ]
+    },
+    {
+      "bone": "DEF-thigh.L",
+      "head": [
+        9
+      ],
+      "tail": [
+        11
+      ]
+    },
+    {
+      "bone": "DEF-shin.L",
+      "head": [
+        11
+      ],
+      "tail": [
+        13
+      ]
+    },
+    {
+      "bone": "DEF-upper_arm.R",
+      "head": [
+        6
+      ],
+      "tail": [
+        8
+      ]
+    },
+    {
+      "bone": "DEF-forearm.R",
+      "head": [
+        8
+      ],
+      "tail": [
+        41
+      ]
+    },
+    {
+      "bone": "DEF-thigh.R",
+      "head": [
+        10
+      ],
+      "tail": [
+        12
+      ]
+    },
+    {
+      "bone": "DEF-shin.R",
+      "head": [
+        12
+      ],
+      "tail": [
+        14
+      ]
+    }
+  ]
+}
