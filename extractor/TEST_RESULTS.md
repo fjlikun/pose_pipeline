@@ -38,3 +38,32 @@ python extract_video.py --video /path/to/your_input.mp4 \
 - 自动测试从 6 项扩展为 11 项，全部通过。新增全数值字段/dtype/嵌套路径/mesh faces 往返、missing/error 记录、已有目录保护、关闭 NPZ、不压缩 NPZ、失败运行 complete=false 等覆盖。Notebook 代码 cells 再次编译通过。
 - CUDA、长视频、磁盘满/强制终止场景、整本 Notebook UI 未实测。磁盘写入失败设计为中止，文档明确部分归档与 JSON O(N) 内存边界。
 - 独立审查发现并修复 JSON/NPZ 路径冲突：共享 preflight_archive 在 CLI、Notebook、extract 中提前拒绝 JSON 路径等于或位于 NPZ 目录内。新增 6 个冲突路径子案例（目录本身、manifest、JSONL、assets、帧 NPZ、嵌套路径），确认不会执行推理或创建目录。最终 12 项测试全部通过；Notebook 再次语法检查通过。
+
+## Notebook 安装/下载增强验证（2026-11-11，后续更新）
+
+- 从已交付 NPZ 版工程恢复后更新；本轮原模型/venv已不在当前工作环境，**没有重新运行真实模型、GPU或干净环境完整安装**。先前真实CPU记录仍是此前版本验证，不作为新安装配对的验证。
+- 新增 setup_runtime.py 与 notebook 的显式开关配置、当前kernel依赖安装、官方固定commit源码+补丁、ModelScope/Hugging Face三资产下载、离线检查单元。
+- 当前worker运行 `python tests/test_setup_runtime.py`：12项离线/mock测试全部通过。覆盖许可/来源阻止、已有资产不修改、hash/缺失/config错误、磁盘不足、HF解析commit后只下载三文件、ModelScope allow_patterns、失败不发布目标、已有非git目录保护、CPU/CUDA安装命令正确使用当前kernel、已有torch不重装、错误SAM源码缓存要求重启。
+- 独立审查员另运行5项离线mock通过；全部notebook代码cells与本项目Python模块语法检查通过。没有把mock下载称作实际联网下载。
+- 新配方候选 torch 2.7.1 / torchvision 0.22.1、CPU或cu126均未端到端实测；旧环境是torch 2.15.0+cpu。SAM依赖并非完整锁文件，未来解析/平台ABI可能变化。版本、授权、下载来源与已有资源保护均在README和Notebook明确。
+
+## 已有 PyTorch/CUDA 保护与官方依赖更新（后续修订）
+
+- 在线读取官方 pinned INSTALL.md，核实35项第3节Python依赖，补齐pytest/black；当前helper已删除所有torch/torchvision/CUDA安装代码及Notebook wheel版本配置。此前候选torch配方说明是历史记录，不再描述当前行为。
+- 安装策略更新为冻结所有已装distribution，wheel-only dry-run预检，拒绝已装包替换/重装及新增torch/CUDA运行时，固定缺失wheel URL+SHA256，--no-deps/--no-build-isolation安装并pip check。OpenCV多个provider共用cv2目录也会拒绝。
+- `python tests/test_setup_runtime.py` 最终17项离线/mock测试通过，包括已有torch缺失时零pip调用、不安全计划不应用、哈希wheel/no-deps参数、pip check失败不重试、OpenCV provider冲突；全部Python模块与Notebook代码语法检查通过。
+- 独立审查员先行6项安装保护mock通过。没有实际改动当前Python包、下载/安装官方依赖或执行CUDA推理；无wheel、源码构建、ABI等限制明确在说明中。
+- 多主体只新增准确的升级设计说明，没有实现检测、跟踪、多主体schema或Blender改造；现有单主体JSON 1.0保持不变。
+
+## 多人检测/跟踪与GPU默认 Notebook（当前版本）
+
+- 新增 multi_person.py：torchvision Faster R-CNN person检测（本地显式权重）、constant-velocity bbox + greedy IoU多目标关联、真实秒TTL、每track独立JSON1.0与NPZ、root manifest与samples索引。原single API保留。
+- GPU默认应用gpu_local_dinov3.patch，只负责固定本地DINO与安全权重读取；CPU补丁cpu_device.patch需显式调用，Notebook代码默认注释。两个补丁逐字拼接等于已验证过的旧cpu_local_dinov3.patch。源码版本仍固定；未知修改拒绝。
+- Notebook重写为清晰的配置、官方依赖补缺、git pinned同步、CPU可选注释、SAM模型下载、torchvision检测器显式下载、资源校验/加载、多人/单人推理和输出检查单元。默认不运行外部安装/下载，不重装torch/CUDA。
+- 当前环境没有torch或旧SAM模型文件，因此**未运行真实GPU、真实detector或本轮SAM CPU推理**。此前静帧/两帧真实CPU结果为历史版本证据，不能作为多人精度或当前GPU路径的端到端验证。
+- 为测试将PyAV16.1.0独立安装到测试目录，不修改当前torch/CUDA环境。`PYTHONPATH=<test-deps> python -m unittest discover -s extractor/tests -p 'test_*.py'` 共41项通过：原单人12项、setup21项、多人8项。
+- 多人8项使用真实临时MPEG4编解码、NumPy、NPZ实际写读，但detector/SAM是模拟器：覆盖检测返回顺序反转、短漏检恢复ID、TTL后新ID、30000/1001 FPS+stride+start原时间、逐人NPZ/JSON一致、无人/全失败、检测异常partial状态及已有目录保护。
+- 新setup测试覆盖GPU/CPU补丁分离、未知修改拒绝、CPU检查必须全补丁，以及检测器显式下载门控/hash/已有文件不覆盖；下载函数被mock，未实际访问检测器权重。
+- 独立审查额外使用真实FFV1 VFR视频（起始PTS非零）+模拟模型跑6项集成，并将各人物JSON交给原Blender load_sequence验证；还执行5项模拟解码/模型集成。没有在当前环境启动Blender渲染。
+- 独立审查逐单元执行整个Notebook的multi和single分支：实际解码/写JSON与NPZ，模型/检测器由替身提供，外部安装/git/下载均关闭，接口与变量贯通。不是实际GPU/联网安装测试。
+- 所有项目Python模块与Notebook代码语法检查通过。真实多人遮挡、交叉、身份切换准确率、长视频、GPU显存要求和干净环境安装未测；跟踪没有外观ReID，不能承诺身份始终稳定。

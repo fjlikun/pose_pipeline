@@ -1,0 +1,29 @@
+diff --git a/sam_3d_body/build_models.py b/sam_3d_body/build_models.py
+index faebd6c..951a278 100644
+--- a/sam_3d_body/build_models.py
++++ b/sam_3d_body/build_models.py
+@@ -28,7 +28,7 @@ def load_sam_3d_body(checkpoint_path: str = "", device: str = "cuda", mhr_path:
+     # Initialze the model
+     model = SAM3DBody(model_cfg)
+ 
+-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
++    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True, mmap=True)
+     if "state_dict" in checkpoint:
+         state_dict = checkpoint["state_dict"]
+     else:
+diff --git a/sam_3d_body/models/backbones/dinov3.py b/sam_3d_body/models/backbones/dinov3.py
+index bd0103a..c54c025 100644
+--- a/sam_3d_body/models/backbones/dinov3.py
++++ b/sam_3d_body/models/backbones/dinov3.py
+@@ -13,9 +13,9 @@ class Dinov3Backbone(nn.Module):
+         self.cfg = cfg
+ 
+         self.encoder = torch.hub.load(
+-            "facebookresearch/dinov3",
++            __import__("os").environ["SAM3D_DINOV3_REPO"],
+             self.name,
+-            source="github",
++            source="local",
+             pretrained=False,
+             drop_path=self.cfg.MODEL.BACKBONE.DROP_PATH_RATE,
+         )

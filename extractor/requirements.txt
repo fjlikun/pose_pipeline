@@ -1,4 +1,7 @@
-# Install torch + torchvision first using the matching official PyTorch CPU/CUDA wheel.
+# Assumes torch/torchvision/CUDA are already installed; do not reinstall them.
+# Reference for base extractor dependencies only, not a protected environment installer.
+# In an existing environment use notebook setup_runtime.install_dependencies() instead;
+# direct pip install -r this file can resolve/replace existing dependencies.
 av>=14,<20
 numpy>=1.26,<3
 opencv-python>=4.8

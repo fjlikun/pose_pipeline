@@ -14,8 +14,8 @@
 
 ## 需要自行准备
 
-1. 自己的视频；当前方案默认单人全画面或固定框，不提供多人检测和跟踪。
-2. Python 环境、官方 SAM 3D Body 与 DINOv3 源码及获授权的权重。务必先按 `extractor/README.md` 的固定 commit、依赖和 CPU patch 完成安装；不是仅安装 requirements.txt 就能执行模型。
+1. 自己的视频；Notebook默认多人检测/短时IoU关联并逐人导出；也保留单人全画面/固定框。ID关联不是可靠身份重识别。
+2. Python 环境、官方 SAM 3D Body 与 DINOv3 源码及获授权的权重。务必先按 `extractor/README.md` 的固定 commit、依赖和GPU本地DINO补丁完成设置；CPU需额外显式device补丁；不是仅安装 requirements.txt 就能执行模型。
 3. Blender 可执行程序与原始绑定角色 `.blend`。请使用原角色文件；本包不会重建或附带该模型。换角色时要修改映射中的骨架名、骨骼名及关键点对应关系。
 
 ## 最短运行流程
@@ -41,9 +41,9 @@ pose-blender --blender "/path/to/blender" \
   --output-blend "new_animation.blend"
 ```
 
-先用两帧验证安装。正式视频处理时删除 `--max-frames 2`；stride=3 表示每三个源帧取一个，不会把动作时间缩短。CPU 可能很慢。需要 GPU 时改为 `--device cuda` 并安装匹配驱动的 PyTorch CUDA 版本；本次没有验证 GPU。输出路径应是新文件，避免覆盖既有结果。
+先用两帧验证安装。正式视频处理时删除 `--max-frames 2`；stride=3 表示每三个源帧取一个，不会把动作时间缩短。CPU 可能很慢。以上是保留的单人CPU示例。Notebook默认GPU，假设PyTorch/CUDA已就绪，不重装现有环境；本次没有验证 GPU。输出路径应是新文件，避免覆盖既有结果。
 
-使用 Notebook 时，先切换到 `extractor` 目录，再执行 `jupyter notebook video_to_pose.ipynb`，逐项修改路径。Notebook 默认 `MAX_FRAMES=2`，正式运行再改成 `None`。
+使用 Notebook 时，先切换到 `extractor` 目录，再执行 `jupyter notebook video_to_pose.ipynb`，逐项修改路径。Notebook 默认多人模式、GPU、`MAX_FRAMES=30`，正式运行再改成 `None`。
 
 ## 两工程之间的约定
 
@@ -74,6 +74,22 @@ python -m unittest discover -s tests -v
 
 输出 `motion.json` 时默认同时创建 `motion_npz/`，包含 manifest、逐帧索引、帧 NPZ 和单独一次保存的 faces。保存 SAM estimator 返回的全部数值字段，保留 dtype/shape；不包含模型内部中间激活。Blender 仍只读取 JSON，不需要 NPZ。
 
-可用 `--npz-dir` 选择新归档目录、`--npz-uncompressed` 关闭压缩，或 `--no-npz` 只输出 JSON。JSON 文件必须在归档目录外，已有归档目录不会覆盖。Notebook 有相应 SAVE_NPZ / NPZ_DIR / NPZ_COMPRESSED 参数。完整参数、读取示例和失败归档处理见 extractor/README.md。
+可用 `--npz-dir` 选择新归档目录、`--npz-uncompressed` 关闭压缩，或 `--no-npz` 只输出 JSON。JSON 文件必须在归档目录外，已有归档目录不会覆盖。Notebook 有 SAVE_NPZ / NPZ_COMPRESSED 参数；多人目录由track_id独立组织，单人使用JSON同名_npz目录。完整参数、读取示例和失败归档处理见 extractor/README.md。
 
 CPU 两帧归档已经实测与独立复核：每帧 16 个模型数值字段和 2 个时间上下文字段，NPZ 关键点与 JSON 完全一致，allow_pickle=False 可读。归档逐帧写盘，但 JSON 关键点仍随帧数占用内存；长视频应分段并预留磁盘，不承诺恒定内存、实时速度或普遍压缩倍数。第三方字段仍保留上游语义，不可一概视为米或 XYZ。
+
+## 新增：Notebook 安装与下载
+
+Notebook 现在包含依赖安装、固定版本 SAM/DINOv3 源码准备、模型下载及离线检查单元，辅助实现为 `extractor/setup_runtime.py`。默认所有外部操作关闭，按 extractor/README.md 的顺序逐项开启。可选择 ModelScope 镜像或官方 Hugging Face，需自行确认模型许可；不写入或保存 token。已有目录不会覆盖。
+
+历史版本通过安装/下载逻辑的 17 项离线模拟测试（最新测试见extractor/TEST_RESULTS.md）和独立审核，未重新联网下载大型模型或进行全新环境端到端推理。CPU 真实推理记录来自前一轮环境；GPU 仍未实测。当前版本不会安装或替换 torch、torchvision、CUDA；须先由用户准备好匹配环境。请勿把离线通过视为目标电脑安装成功。
+
+离线安装逻辑测试：`python -m unittest discover -s extractor/tests -p test_setup_runtime.py -v`。
+
+## 当前依赖保护与多人范围
+
+安装辅助工具覆盖官方固定版本 INSTALL.md 的35项Python依赖，冻结已有包版本，仅补充通过预检的缺失wheel。它不安装、升级或替换PyTorch/CUDA，也不以源码包构建绕过保护。缺少既有torch/torchvision、依赖冲突或无可用wheel会停止。依赖与二进制ABI仍需在目标电脑实际验证。
+
+多人功能现已实现于 extractor/multi_person.py：torchvision Faster R-CNN person检测、预测bbox IoU关联、每个track独立JSON1.0与NPZ。原Blender driver每次导入一个track的motion.json；不自动创建共享多人场景，也不恢复世界位移。Notebook包含依赖、git同步、SAM和detector权重下载、GPU默认/CPU注释补丁及推理单元。检测/跟踪真实视频精度与GPU端到端尚未实测。
+
+多人测试：`python extractor/tests/test_multi_person.py`。依赖PyAV/NumPy，使用真实临时视频编解码与模拟detector/SAM，不能视为真实模型精度验证。
