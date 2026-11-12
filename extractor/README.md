@@ -1,69 +1,180 @@
-# 工程 1：视频 → 多人检测/跟踪 → 每人 SAM JSON + NPZ
+# 工程 1：视频 → 人体姿态 JSON + NPZ
 
-打开 `video_to_pose.ipynb`，默认 GPU + 多人模式，逐项配置依赖、git同步、模型下载、检测与跟踪。单人模式仍保留（MULTI_PERSON=False）。JSON 是交接文件，第二个 Blender 工程不需要 PyTorch、模型或本工程。
+支持单人和多人。Notebook 默认 GPU + 多人模式，输出每条检测轨迹的 JSON、原始 NPZ 和用于共享 Blender 场景的相机相对位置。JSON 是与 Blender 工程的交接文件，Blender 环境无需安装模型依赖。
 
-## 安装和模型下载（新增 Notebook 单元，需手动开启）
+## 在 Notebook 环境中使用
 
-假定当前 Python 3.11/3.12 kernel 已有可用的 PyTorch、torchvision 和所需 CUDA。新版 Notebook 不会安装/升级/重装这些组件；只可选地补充官方 Python 依赖。不要为本工程重复安装 CUDA，也不要用无保护 pip 命令覆盖现有环境。这里不用 Detectron2、SAM3、MoGe：多人检测使用现有torchvision的Faster R-CNN，跟踪使用本工程的预测IoU关联；单人模式仍支持全画面或固定bbox。
+打开 `video_to_pose.ipynb`，按顺序执行准备和推理单元。也可以只把这个 ipynb 上传到 Notebook 平台：第一个配置单元会判断当前位置，项目不存在时，下一单元执行 `git clone https://github.com/fjlikun/pose_pipeline.git`。私有仓库需要预先配置 Git 访问权限，也可修改 `PROJECT_URL`。
 
-已有环境请使用下方 Notebook 安全补缺单元；requirements.txt 仅供基础依赖参考，不建议直接 pip install -r 绕过保护。
+1. 选择 **Python 3.11（推荐）或 3.12** kernel，先准备匹配硬件的 PyTorch、torchvision。系统需要 Git；`PACKAGE_MANAGER="uv"` 时还需要已安装的 uv。GPU 平台已有的 PyTorch/CUDA 可继续使用。
+2. 在配置单元修改 `VIDEO`、`DEVICE`、输出路径，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。
+3. 执行项目克隆单元，再执行依赖安装单元。依赖统一来自 **`extractor/requirements.txt`**；命令使用 `sys.executable -m pip`，或 `uv pip --python sys.executable`，安装到当前 kernel。Notebook 会生成 `runtime/torch-constraints.txt`，固定现有 torch/CUDA 相关包版本；其他包仍由 pip/uv 正常解析，可能调整版本，建议使用项目专用环境。
+4. 安装完成后重启 kernel，重新执行配置和项目定位单元，跳过依赖安装单元继续。SAM/DINOv3 单元会执行固定 commit 的 `git clone`、`checkout` 和 `git apply`。`DEVICE="cpu"` 时自动追加 CPU 设备补丁。
+5. 执行 SAM 模型下载单元。默认 ModelScope，可改 `MODEL_SOURCE="huggingface"`。官方 Hugging Face 需事先获准访问，并通过终端 `hf auth login` 或平台 secret 环境变量认证；不要把 token 写进单元格。请先阅读模型与来源的适用许可证。
+6. 多人模式继续执行检测器权重下载单元；单人模式自动跳过。最后执行本地校验、模型加载和视频提取。先使用默认 `MAX_FRAMES=30` 检查，正式处理再改 `None`。
 
-官方源码：
+每个准备单元执行时才会安装/联网，不再通过 RUN_INSTALL/RUN_GIT_SYNC 等开关调用安装封装。所有命令以 `subprocess.run([...], check=True)` 执行，当前命令失败会停止该单元。不要在错误未解决时继续后续单元。
 
-```sh
-git clone https://github.com/facebookresearch/sam-3d-body.git
-git -C sam-3d-body checkout b5c765a0d89d789985e186d396315e7590887b94
-git clone https://github.com/facebookresearch/dinov3.git
-git -C dinov3 checkout 6876159a11b4df116f30f667f8c9888617df0751
-git -C sam-3d-body apply /absolute/path/to/extractor/gpu_local_dinov3.patch
-# 可选CPU，默认不执行；需在上面的GPU基础补丁之后应用
-# git -C sam-3d-body apply /absolute/path/to/extractor/cpu_device.patch
-export SAM3D_DINOV3_REPO=/absolute/path/to/dinov3
+项目和上游源码目录存在时直接校验，不 pull/reset；已有模型和检测器权重只校验，不覆盖。下载先在临时目录完成并校验，成功后发布；ModelScope 单元启用客户端内置8路大文件并行。重新运行推理前必须换新的输出路径。只克隆项目时跳过 Git LFS 样例视频，需自行设置可用的视频文件。若要使用仓库视频，先用 Git LFS 拉取实体，例如 `git lfs pull --include="文艺甜1023280.mp4"`；只有百余字节的 `.mp4` 是指针，不能直接解码。
+
+## 不使用 Notebook：在终端手动准备
+
+以下命令在项目根目录执行，分别完成源码、环境、依赖、补丁、模型和推理。代码块中的续行使用 Bash 语法；PowerShell 可合成一行运行。模型需要约 2GB，依赖/下载缓存/模型建议预留 15–20GB 以上空间；长视频的 NPZ 还需额外磁盘。
+
+### 1. 克隆本项目并选择 Python 环境
+
+```bash
+# GIT_LFS_SKIP_SMUDGE=1 表示不下载仓库的 Git LFS 样例视频
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/fjlikun/pose_pipeline.git
+cd pose_pipeline
+python3.11 -m venv .venv
+source .venv/bin/activate
 ```
 
-patch 针对上述 SAM commit：默认GPU补丁仅把权重加载改为 weights_only=True/mmap=True，并使用固定commit的本地DINOv3源码，不改动CUDA设备逻辑。可选CPU补丁才把硬编码CUDA改为model.device。两者合起来等价于保留的cpu_local_dinov3.patch；旧版已打完整补丁的checkout也可复用。先查看 patch 再应用；其他版本可能不兼容。不要在已经打过补丁的目录再次 apply。没有打补丁的官方代码仍有硬编码 CUDA，不能仅靠 device='cpu' 运行。
+Windows PowerShell 对应：
 
-官方权重：https://huggingface.co/facebook/sam-3d-body-dinov3 。自行申请访问、阅读并接受适用许可证，然后通过官方 Hugging Face 客户端下载到本地。需要 `model.ckpt`、`model_config.yaml` 和 `assets/mhr_model.pt`。不要把访问 token 写进 notebook。MHR TorchScript 及模型来源须可信；weights_only 不是对所有模型资产的全面安全保证。
+```powershell
+$env:GIT_LFS_SKIP_SMUDGE = "1"
+git clone https://github.com/fjlikun/pose_pipeline.git
+cd pose_pipeline
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-本次已有环境使用的权重来源是用户先前允许的 ModelScope 镜像（https://modelscope.cn/models/facebook/sam-3d-body-dinov3/summary），新版 notebook 将此镜像作为默认可选来源，保留官方 Hugging Face 选项；仅在用户开启下载单元后访问，不打包权重。此公开镜像此前不需 Hugging Face 的访问申请，但仍适用模型与镜像实际许可。既有文件核验值：
-- model.ckpt SHA256：b5a2f9d305dd02626b967aa2e86021fba07065df66ce7a7e00ffb9664f150abf
-- mhr_model.pt SHA256：352e271a6c42729c68554ceaea0c955e866970160c31e35506d782dc0f7377bc
+也可用 `uv venv --python 3.11 .venv` 创建环境，再按操作系统激活。已有 Notebook/虚拟环境可直接使用，不必重新创建。
 
-这些值只标识本次已有文件，不等于官方认证。SAM/DINOv3/MHR 各自许可仍适用。依赖版本/ABI（torch、torchvision、CUDA、xtcocotools）可能需要按平台调整。模型约 2GB，加载和运行 RAM 显著高于权重大小，CPU 每帧可能很慢；先测试 1–2 帧，不承诺实时。
+### 2. 安装匹配硬件的 PyTorch，再安装 requirements.txt
 
+先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)选择 CPU 或匹配驱动的 CUDA wheel。**CPU 示例**：
 
-### 推荐：在已有 PyTorch/CUDA 环境中补充依赖
+```bash
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
 
-已在线核对 [官方固定版本 INSTALL.md](https://github.com/facebookresearch/sam-3d-body/blob/b5c765a0d89d789985e186d396315e7590887b94/INSTALL.md)：第3节35项 Python 依赖已完整纳入 `OFFICIAL_DEPENDENCIES`，包括 pytest、black，networkx==3.2.1 与官方保持一致。另加本视频管线需要的 PyAV、PyYAML、ModelScope。它们不是官方原文的一部分。没有下载/安装 PyTorch、torchvision、torchaudio 或 CUDA 的分支；原版安装配方里的 torch wheel 参数已删除。
+GPU 用户请使用官方选择器给出的 CUDA 命令；不要在已有 GPU 环境执行上面的 CPU 示例。`requirements.txt` 不固定 torch/torchvision/CUDA，它们需要先准备好；`pytorch-lightning`/`timm` 等仍有 torch 的传递依赖，因此在缺少 torch 的环境直接安装此文件可能由解析器选入不合适的运行时。
 
-1. 选择**已经安装好 PyTorch/torchvision/CUDA 的 Jupyter kernel**。从 extractor 目录打开 notebook，否则修正 EXTRACTOR_DIR。需要系统 git。官方建议 Python 3.11，本工程允许3.11/3.12，但不是全部组合已实测。当前 pip 需支持 --dry-run/--report（pip 22.2+）；不支持时会停止，不自动升级 pip。
-2. DEVICE 默认 cuda，只决定后续运行检查/推理设备，**不触发 CUDA 安装**。CPU 推理可改 cpu；torch/torchvision 缺失时安装器立即停止，由你选择正确 kernel。它不修复驱动，不安装系统编译器/CUDA Toolkit，不重建已有环境。
-3. 需要时设 RUN_INSTALL=True，执行 `install_dependencies()`。这是“官方依赖列表 + 保守 wheel-only 补缺策略”，不是照搬官方单行 pip 命令，更不是完整官方安装已成功的保证。其保护流程：
-   - 读取并固定**全部已安装 distribution 版本**为 constraints（不只 torch/torchvision，也包括 nvidia-*、triton 等）。
-   - 当前 kernel 的 sys.executable -m pip 只做 --dry-run --report --only-binary=:all: --no-build-isolation；完整解析缺失依赖，但不执行安装。不会用源分发包的构建隔离另下 torch。
-   - 检查报告，拒绝任何已有包重新安装/替换（即使同版本），并拒绝新装 torch/torchvision/torchaudio、nvidia-*/CUDA、triton 等受保护运行时。已有版本不满足官方要求就停止，不自动降级或升级。
-   - 仅安装计划中的**缺失 wheel**，固定原报告 URL+SHA256，并使用 --no-deps --no-build-isolation --only-binary=:all: --require-hashes。这里 --no-deps 是因为依赖闭包已经事先解析，不是忽略缺失依赖。
-   - 安装后复核现有版本未变，执行 pip check。失败就停止，不回退无保护安装。重启 kernel 后再运行实际 SAM import 检查。pip check只能检查声明的版本依赖，不能证明NumPy/CUDA/编译扩展ABI可用或推理正确。
+然后选择一种安装方式：
 
-对已知共享文件冲突也设阻止：已有 opencv-python-headless / opencv-contrib-python 等其他OpenCV provider时，拒绝再装官方列表的opencv-python，避免覆盖同一cv2目录。需要由用户选择单一provider，不能靠pip check发现此类问题。其余版本/计划保护以distribution元数据为基础，不是对任意第三方wheel内容或全部文件碰撞的安全证明；只在可信环境/可信包索引使用。
+```bash
+# pip：使用已激活环境的 Python
+python -m pip install -r extractor/requirements.txt
+python -m pip check
 
-新增包安装不是事务；中断可能留下部分新包。保护的是不替换原有包，不代表完全不改变环境（你明确开启安装时会添加缺失包）。避免同时运行其他安装器。日志/环境记录分享前检查敏感路径或私有索引信息。候选包版本由现有环境、索引和约束共同解析，官方列表不是完整 lockfile，未来结果不保证相同。
+# 或 uv：显式指定同一个虚拟环境（Linux/macOS）
+uv pip install --python .venv/bin/python -r extractor/requirements.txt
+uv pip check --python .venv/bin/python
+```
 
-4. 安装后重启 kernel，再运行配置；将 RUN_INSTALL 设回 False。RUN_GIT_SYNC=True 下载固定 commit 的 SAM/DINOv3 并应用GPU安全/本地DINO补丁；CPU补丁代码在Notebook单独列出且默认注释。已有源目录版本、来源或 tracked 修改不符则拒绝，不 reset。只复用可信 checkout，未跟踪/被忽略的本地代码也可能影响导入；不要使用来源不明目录。修改 SAM_REPO/DINOV3_REPO 后也应重启 kernel，不能仅改变 sys.path。检查会拒绝已缓存的其他 SAM 源码。
-5. MODEL_SOURCE 默认 modelscope；选择 huggingface 时配置将 revision 默认映射为 main，ModelScope 为 master。官方源可能要求先申请 gated access 并在终端 `hf auth login` 安全登录。不要把 token 填入 notebook、提交到代码或截图。镜像不需要 HF 申请不等于免许可。阅读来源及模型许可后设 MODEL_TERMS_CONFIRMED=True、RUN_MODEL_DOWNLOAD=True。
-6. 下载仅三个文件到 CHECKPOINT_DIR，路径和推理参数共享，临时目录验证成功才发布。已有目录只读校验，不补写或覆盖；缺失/损坏时选择新目录。权重/MHR SHA256 默认与前次文件一致，不一致会停止；不要无依据清空 expected_hashes。config也计算hash并保存在 download_provenance.json。未提供config的历史认证hash，检查只是安全YAML结构与来源记录。
-7. 运行离线检查 cell：核对源码commit/patch、三个模型文件/hash/config、SAM相关import和CUDA可用性。不反序列化权重，不执行推理；检测成功不代表RAM/显存足够。最后运行原来的加载和提取单元。
+Windows 的 uv 命令将 Python 路径改为 `.venv\Scripts\python.exe`。如果要使用 Notebook 生成的框架约束，在 install 命令后加 `-c runtime/torch-constraints.txt`。
 
+依赖清单以 [固定 SAM commit 的 INSTALL.md 第3节](https://github.com/facebookresearch/sam-3d-body/blob/b5c765a0d89d789985e186d396315e7590887b94/INSTALL.md)为基线，列出其35项 Python 依赖；`appnope` 仅在 macOS 安装，未被本推理管线导入的评测依赖 `xtcocotools` 在 Windows 跳过（缺少兼容 wheel，源码包还缺 NumPy 构建声明）。另加视频、Notebook、构建工具及下载客户端。ModelScope 固定为 1.29.2，以使用本文的 `python -m modelscope.cli.cli` 接口；Hugging Face 客户端使用提供 `hf` 的 0.34–0.x 系列。这不是完整跨平台 lockfile。
 
-### 没有 wheel / 需要源码扩展时
+本工程使用 torchvision 检测器，不需要 Detectron2、MoGe 或 SAM3。ModelScope 1.29.2 CLI 仍导入 pkg_resources，因此清单固定 `setuptools<81`。某些平台的 xtcocotools/pycocotools 等需要本机编译工具和匹配的 NumPy ABI，单个 requirements 文件不能代替系统 C/C++ 编译器。构建失败时应先按对应包说明准备工具链。`ffmpeg` Python 包也不提供系统 ffmpeg 可执行文件；只有后续需要合成 MP4 时才另行安装系统 ffmpeg。
 
-官方依赖中的 xtcocotools、pycocotools、chump 等在某些平台/版本可能无可用wheel，或者现有 NumPy 版本与扩展ABI不兼容。保守安装器会停止，**不会自动改用源码构建、加 --upgrade、取消constraints或重装torch**。应在独立、受控的环境中手动准备匹配的 C/C++ 编译器、Python/NumPy头文件、setuptools/wheel/Cython等构建依赖，核查各项目的 pyproject.toml/setup.py 和支持版本。--no-build-isolation意味着这些构建工具必须提前存在，不等于无需构建依赖。若新源码构建要求另一套torch/CUDA，需由用户明确决定换环境，不能污染当前kernel。
+### 3. 克隆固定版本的 SAM / DINOv3 并应用补丁
 
-官方第4节是 Detectron2，提供的命令针对 facebookresearch/detectron2 的 a1ce2f9 并带 `--no-build-isolation --no-deps`。本工程改用torchvision检测器，单人固定bbox模式也不需要Detectron2，因此没有自动安装它。将来若改用它，需另行核查其编译器、torch/CUDA/驱动匹配和缺失依赖，不应直接运行无保护的自动依赖安装。
+以下命令用于新的 `runtime/` 目录；已有 checkout 不要再次 clone/apply，先核对其版本和修改：
 
-第5/6节的 MoGe（FOV）和 SAM3（另一个检测器）是可选项目，各自有仓库、构建依赖与模型访问/许可要求；SAM3 示例还列 decord/psutil。本工程没有安装它们，也不把这些可选工具当成多目标跟踪系统。需要时单独审查其依赖计划与许可证，仍不得让它们间接替换当前torch/CUDA。
+```bash
+mkdir -p runtime
+git clone --no-checkout https://github.com/facebookresearch/sam-3d-body.git runtime/sam-3d-body
+git -C runtime/sam-3d-body checkout --detach b5c765a0d89d789985e186d396315e7590887b94
+git clone --no-checkout https://github.com/facebookresearch/dinov3.git runtime/dinov3
+git -C runtime/dinov3 checkout --detach 6876159a11b4df116f30f667f8c9888617df0751
+```
 
-所有外部安装/下载开关默认 False；导入 setup_runtime.py 无外部操作。模型约2GB，下载前至少要求8GiB空闲；包括依赖/缓存建议预留15–20GB以上，不是最大值保证。错误会停止，不自动改源、绕过访问限制或覆盖资源。官方源码commit固定；HF解析并记录实际模型commit，ModelScope记录requested revision和文件SHA256。
+PowerShell 的目录创建命令可用 `New-Item -ItemType Directory -Force runtime`。补丁路径必须是绝对路径：
+
+```bash
+# Bash：项目根目录
+PATCH_DIR="$PWD/extractor"
+git -C runtime/sam-3d-body apply --check "$PATCH_DIR/gpu_local_dinov3.patch"
+git -C runtime/sam-3d-body apply "$PATCH_DIR/gpu_local_dinov3.patch"
+
+# 仅 CPU 追加；GPU 跳过这两行
+git -C runtime/sam-3d-body apply --check "$PATCH_DIR/cpu_device.patch"
+git -C runtime/sam-3d-body apply "$PATCH_DIR/cpu_device.patch"
+
+export SAM3D_DINOV3_REPO="$PWD/runtime/dinov3"
+```
+
+PowerShell 对应变量和 GPU 基础补丁：
+
+```powershell
+$patchDir = (Resolve-Path extractor).Path
+git -C runtime/sam-3d-body apply --check "$patchDir/gpu_local_dinov3.patch"
+git -C runtime/sam-3d-body apply "$patchDir/gpu_local_dinov3.patch"
+# 仅 CPU 追加；GPU 跳过
+git -C runtime/sam-3d-body apply --check "$patchDir/cpu_device.patch"
+git -C runtime/sam-3d-body apply "$patchDir/cpu_device.patch"
+$env:SAM3D_DINOV3_REPO = (Resolve-Path runtime/dinov3).Path
+```
+
+GPU 基础补丁使用固定本地 DINOv3 和 weights_only/mmap checkpoint 加载；CPU 补丁才修改硬编码 CUDA 设备。只设置 `--device cpu` 不能替代 CPU 源码补丁。校验比较补丁的实际文件路径、hunk 和代码差异，忽略 Git 生成的 index 标识；未知代码修改仍会拒绝。更换源码或设备补丁后重启已有 kernel/Python 进程。
+
+### 4. 用命令下载 SAM 模型
+
+先阅读 [SAM 模型许可与访问说明](https://huggingface.co/facebook/sam-3d-body-dinov3)。选择一个来源，不在同一个目标目录混用。以下下载命令仅用于新目录；已有文件应先校验，手工 CLI 不具备 Notebook 外层的暂存/不覆盖保护。
+
+```bash
+# ModelScope 镜像：仅下载所需三个文件
+python -m modelscope.cli.cli download --model facebook/sam-3d-body-dinov3 --revision master --local_dir runtime/checkpoints --include model.ckpt model_config.yaml assets/mhr_model.pt
+```
+
+或使用 [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)，事先申请并获得模型访问权限：
+
+```bash
+hf auth login
+hf download facebook/sam-3d-body-dinov3 model.ckpt model_config.yaml assets/mhr_model.pt --revision main --local-dir runtime/checkpoints
+```
+
+最终目录应包含：
+
+```text
+runtime/checkpoints/
+  model.ckpt
+  model_config.yaml
+  assets/mhr_model.pt
+```
+
+可在项目根目录执行校验：
+
+```bash
+python -c "import sys; sys.path.insert(0, 'extractor'); from runtime_checks import verify_assets, KNOWN_HASHES; print(verify_assets('runtime/checkpoints', KNOWN_HASHES))"
+```
+
+默认 SHA256 来自此前实测资产，只标识该文件版本，不是对镜像的官方认证；不一致应核对来源和版本，不要盲目关闭校验。分支 revision 可能移动，需严格固定模型版本时自行指定已核实的 commit。不要把 token 写进命令、Notebook 或仓库。
+
+### SHA256 实际校验范围
+
+| 文件 | 校验方式 | 预期来源 |
+| --- | --- | --- |
+| `model.ckpt` | 比较完整 SHA256（64个十六进制字符） | 此前实际验证的固定权重，值见 `runtime_checks.KNOWN_HASHES` |
+| `assets/mhr_model.pt` | 比较完整 SHA256（64个十六进制字符） | 此前实际验证的固定 MHR 文件 |
+| 检测器 `.pth` | 下载及 Notebook 复用时，核对 torchvision 官方枚举 URL 文件名中的 SHA256 前缀；同时可计算完整值用于记录 | `download.pytorch.org` 的官方权重 URL |
+| `model_config.yaml` | 计算并记录完整 SHA256；没有已知预期值可供比对；另用 safe_load 检查 MODEL 映射 | 下载得到的配置本身 |
+
+哈希用于识别文件版本和发现损坏，不证明第三方来源具有官方身份。SAM/DINOv3 源码通过固定 Git commit 和已知补丁检查，不做逐文件 SHA256 比对。当前 pip/uv 安装没有旧版自定义 wheel 哈希审批流程。多人 CLI 在加载检测器时记录完整权重哈希，但单独传入 CLI 的文件不会自动获得 Notebook 下载单元的官方前缀校验。
+
+`runtime_checks.py` 仅包含常量与只读的哈希/文件/环境检查，不安装、克隆、应用补丁或下载。准备操作只在 Notebook 的命令单元以及本 README 的终端命令中执行。
+
+### 5. 多人模式下载检测器权重
+
+下面在项目根目录执行 Python 命令，读取当前 torchvision 的官方权重枚举并通过 PyTorch 下载。先阅读 [torchvision 预训练权重条款](https://github.com/pytorch/vision#pre-trained-model-license)。单人模式跳过；该终端示例用于新的目标路径，已有文件请先校验，Notebook 单元提供暂存及不覆盖检查。
+
+```bash
+python -c "from pathlib import Path; import torch; from torchvision.models.detection import FasterRCNN_ResNet50_FPN_V2_Weights as W; url=W.COCO_V1.url; p=Path('runtime/detector/fasterrcnn_resnet50_fpn_v2_coco.pth'); p.parent.mkdir(parents=True, exist_ok=True); assert not p.exists(), 'Target already exists'; torch.hub.download_url_to_file(url, str(p), hash_prefix=Path(url).stem.rsplit('-', 1)[1])"
+```
+
+### 6. 运行提取
+
+多人与单人均先用少量采样帧确认安装。以下 GPU 多人示例假定已设置 SAM3D_DINOV3_REPO：
+
+```bash
+python extractor/multi_person.py --video /path/to/input.mp4 --output-dir motion_multi --repo runtime/sam-3d-body --checkpoint runtime/checkpoints/model.ckpt --mhr runtime/checkpoints/assets/mhr_model.pt --detector-weights runtime/detector/fasterrcnn_resnet50_fpn_v2_coco.pth --device cuda --max-frames 30
+```
+
+CPU 改 `--device cpu`，并确认已应用 CPU 补丁。全视频删除 `--max-frames 30`，每次输出目录使用新路径。单人与详细参数见下面 CLI 小节。
 
 ## CLI
 
@@ -114,7 +225,7 @@ python extract_video.py ... --output motion.json --npz-uncompressed
 python extract_video.py ... --output motion.json --no-npz
 ```
 
-Notebook 对应 SAVE_NPZ、NPZ_DIR、NPZ_COMPRESSED。`...` 表示仍需填前面 CLI 示例的 video/repo/checkpoint/mhr 参数，不是可原样运行的完整命令。
+Notebook 对应 SAVE_NPZ、NPZ_COMPRESSED；单人模式使用 JSON 同名的默认 NPZ 目录，需自定义归档路径时使用 CLI 的 --npz-dir。`...` 表示仍需填前面 CLI 示例的 video/repo/checkpoint/mhr 参数，不是可原样运行的完整命令。
 
 ### 安全读取与性能边界
 
@@ -197,7 +308,7 @@ motion_multi/
 
 ### 多人CLI
 
-先按Notebook显式完成环境/源码/SAM与检测器下载：
+先按上面的 Notebook 或终端步骤完成环境、源码、SAM 与检测器权重准备：
 
 ```sh
 python multi_person.py --video input.mp4 --output-dir motion_multi \
@@ -212,4 +323,4 @@ python multi_person.py --video input.mp4 --output-dir motion_multi \
 
 ### Blender边界
 
-每轨JSON可以独立驱动同一角色模板，输出不同.blend。当前不自动将多人放进一个Blender场景，不自动隐藏角色出入场；原driver可能持有/插值缺失帧姿态，需要用户检查。局部关键点不恢复多人共同世界空间的位置、接触或摄影机轨迹。检测/跟踪功能已实现，但真实GPU detector+SAM端到端与真实遮挡效果尚未实测，验证范围见TEST_RESULTS.md。
+每轨 JSON 可单独交给原 Blender driver；也可用 `pose-blender-shared` 将总 manifest 导入同一场景，支持独立角色数据、共同时间轴、出入场隐藏和短时缺失保持，见 `../blender_driver/README.md`。共享位置是未标定的相机相对估计，不恢复真实世界位移、接触或相机运动。真实连续视频和 GPU 端到端的验证边界见 TEST_RESULTS.md 与根目录 INDEPENDENT_REVIEW.md。

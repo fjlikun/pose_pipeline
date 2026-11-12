@@ -1,10 +1,58 @@
-# Assumes torch/torchvision/CUDA are already installed; do not reinstall them.
-# Reference for base extractor dependencies only, not a protected environment installer.
-# In an existing environment use notebook setup_runtime.install_dependencies() instead;
-# direct pip install -r this file can resolve/replace existing dependencies.
+# Install torch/torchvision for your CPU/CUDA platform BEFORE this file.
+# pip: python -m pip install -r extractor/requirements.txt
+# uv:  uv pip install --python /path/to/python -r extractor/requirements.txt
+# Ordinary pip/uv dependency resolution can change installed packages; use a
+# dedicated environment or the notebook's constraints for existing torch/CUDA.
+# This is a dependency manifest, not a fully resolved cross-platform lock file.
+
+# [sam]
+# Official SAM commit b5c765a0d89d789985e186d396315e7590887b94, INSTALL.md section 3.
+pytorch-lightning
+pyrender
+opencv-python>=4.8
+yacs
+scikit-image
+einops
+timm
+dill
+pandas
+rich
+hydra-core
+hydra-submitit-launcher
+hydra-colorlog
+pyrootutils
+webdataset
+chump
+networkx==3.2.1
+roma
+joblib
+seaborn
+wandb
+appdirs
+appnope; sys_platform == "darwin"
+ffmpeg
+cython
+jsonlines
+pytest
+# Upstream evaluation dependency; this inference pipeline does not import it.
+# No compatible Windows wheel; its source build also omits NumPy build metadata.
+xtcocotools; sys_platform != "win32"
+loguru
+optree
+fvcore
+black
+pycocotools
+tensorboard
+huggingface_hub>=0.34,<1
+
+# [pipeline]
 av>=14,<20
 numpy>=1.26,<3
-opencv-python>=4.8
+PyYAML>=6
+# Keep the CLI used by the notebook available (python -m modelscope.cli.cli).
+modelscope==1.29.2
 notebook>=7
 ipykernel>=6
-# SAM 3D Body dependencies are managed separately: see README and upstream INSTALL.md.
+# ModelScope 1.29.2 CLI imports pkg_resources (removed in setuptools 81).
+setuptools<81
+wheel

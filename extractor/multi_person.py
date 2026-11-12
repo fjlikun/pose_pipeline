@@ -74,7 +74,7 @@ class TorchvisionPersonDetector:
         self.model=fasterrcnn_resnet50_fpn_v2(weights=None,weights_backbone=None)
         self.model.load_state_dict(torch.load(path,map_location='cpu',weights_only=True),strict=True)
         self.model.to(device).eval()
-        from setup_runtime import sha256
+        from runtime_checks import sha256
         import torchvision
         self.metadata=dict(torchvision_version=torchvision.__version__,weights_sha256=sha256(path),model='torchvision/fasterrcnn_resnet50_fpn_v2/COCO_V1',
                            score_threshold=score_threshold,max_people=max_people,device=device,weights_file=path.name)

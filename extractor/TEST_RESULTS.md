@@ -1,5 +1,42 @@
 # 验证结果
 
+## 精简准备代码与真实1秒视频验证（2026-11-12，当前）
+
+- 删除 setup_runtime.py 及旧安装、克隆、补丁、下载封装和对应测试；新增 runtime_checks.py，仅保留常量、SHA256、资产检查和运行检查。Notebook、多人提取器与终端说明已同步。
+- 当前回归：提取器53项、Blender driver13项，合计66项通过。Notebook schema/代码编译通过，准备逻辑在真实固定版本源码上重复执行通过。
+- 实际通过 Notebook 命令单元在项目 .venv 安装依赖、准备固定版本 SAM/DINOv3、下载并校验 SAM/MHR/检测器；实际运行 CPU body 分支。环境为 Windows、Python3.12.12、torch2.15.0+cpu、torchvision0.29.2+cpu、Blender5.2.1LTS。
+- 源视频为工程的 文艺甜1023280.mp4。工作区原文件是Git LFS指针；读取本地LFS实体并核对完整SHA256，截取前1秒，缩为1280×720，保留30FPS片段，并生成同长6FPS推理输入。
+- 6个真实采样时点，每个时点都检测到两人，轨迹ID1/2稳定；12组姿态全部成功，逐人JSON与原始NPZ的70×3关键点精确一致，12组相机相对位置全部可用。
+- 使用用户指定 actor_template.blend，生成独立双角色动画。重新打开成片工程，120次映射骨方向检查最大测得0°、12次骨盆检查最大误差8.94e-8模型单位；这些误差相对模型输出，不是相对真人的动捕精度。
+- 原角色文件SHA256前后相同。渲染估计视角和总览各6帧，编码生成视频与并排对比；ffprobe确认原片、抽样输入、两个生成视频和对比视频均为1.000秒。对比左侧使用同一6FPS抽样输入，另保留30FPS原片片段。
+- 实际发现并修复3处兼容问题：Windows跳过本管线不导入的上游评测依赖xtcocotools；ModelScope1.29.2 CLI需要setuptools<81提供pkg_resources；补丁内容校验忽略Git index元信息变化，仍拒绝实际代码变化，增加2项回归。
+- CPU本次提取约567秒（不含下载与模型加载），不承诺实时性能。渲染约12秒。上游非严格加载器报告mask-token/MHR组件缺失键提示，日志保留；本次body输出有限且通过以上检查，未验证full手部细化与GPU。
+
+产物位于本地 runtime/validation_1s：comparison.mp4、generated_matched.mp4、generated_overview.mp4、comparison_sheet.png、validation_animation.blend、validation_report.json、pose_export/及validation_1s_results.zip。模型权重、环境和这些运行产物不提交源码仓库。
+
+可见限制：未重建原片背景、台阶/地面支撑、脚接触、手中道具及精细手指；遮挡肢体为模型估计。总览是展示相机，估计视角也不是经过标定的原镜头。没有人工修改姿态或位置，没有连续动作精度评测；1秒单例不代表长视频、交叉遮挡、稳定身份或GPU可用性。
+
+
+## 历史：Notebook 命令准备流程（2026-11-12）
+
+本次使用 Windows、Python 3.12.12 的项目独立 `.venv`，实际安装 NumPy 2.5.4、PyAV 19.0.2、PyYAML 6.0.3 和 nbformat 5.11.1 作为轻量测试依赖；没有安装 PyTorch/CUDA 或下载模型。
+
+- 提取器全部 **64 项**测试通过：原有49项，加15项 Notebook 准备流程测试。Blender driver 的13项测试也通过，未启动 Blender 进程。
+- 新测试实际执行 Notebook 准备代码单元，外部 git/pip/uv/下载命令使用替身；在含空格的临时目录中验证项目克隆及复用、固定版本源码和 CPU 补丁重复执行、当前 kernel 的 pip/uv 参数、框架 constraints、依赖安装失败停止、两种模型源的暂存/校验/发布、现有模型不覆盖、检测器 hash 和单人跳过检测器。
+- `requirements.txt` 与旧保护安装器的依赖来源一致；保留官方35项依赖，补齐视频/Notebook/下载客户端，平台 marker 交给 pip/uv 解释。
+- nbformat schema 验证、全部代码单元 Python 编译通过；Notebook 没有保存执行输出，代码中不包含凭证。Git diff 空白检查通过。
+- 未执行目标环境全量依赖安装、真实联网源码克隆/权重下载、GPU 或真实模型推理。这些离线命令流程测试不能证明目标电脑的二进制 ABI、显存容量或完整安装成功。
+
+复现本次回归（使用已安装 NumPy/PyAV/PyYAML 的 Python 3.11/3.12 环境，在项目根目录）：
+
+```bash
+python -m unittest discover -s extractor/tests -v
+cd blender_driver
+python -m unittest discover -s tests -v
+```
+
+下文保留的是各历史阶段的验证记录。
+
 2026-11-11，本环境实际运行：
 
 - Python 3.12.14，torch 2.15.0+cpu，PyAV 19.0.2。
