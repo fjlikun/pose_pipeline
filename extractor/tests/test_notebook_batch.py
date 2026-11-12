@@ -10,6 +10,7 @@ import tempfile
 import types
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 import av
 import numpy as np
@@ -81,6 +82,9 @@ class NotebookBatchTests(unittest.TestCase):
         self.assertFalse(overrides, f'Final cell lacks editable settings: {overrides}')
         ast.fix_missing_locations(tree)
         with redirect_stdout(io.StringIO()), \
+                patch.object(Path, 'cwd', return_value=self.root), \
+                patch.dict(sys.modules, {'IPython.display': types.SimpleNamespace(
+                    FileLink=lambda filename: filename, display=lambda value: None)}), \
                 patch.object(extract_video, 'load_estimator', side_effect=AssertionError('must reuse model')), \
                 patch.object(multi_person, 'TorchvisionPersonDetector', side_effect=AssertionError('must reuse detector')):
             exec(compile(tree, 'notebook:extract-video', 'exec'), self.ns)
@@ -119,6 +123,16 @@ class NotebookBatchTests(unittest.TestCase):
         directories = [Path(r['output_dir']) for r in results]
         self.assertNotEqual(*directories)
         self.assertEqual(directories[0].parent, directories[1].parent)
+        zip_path = Path(self.ns['zip_path'])
+        self.assertEqual(zip_path.parent, self.root)
+        with ZipFile(zip_path) as archive:
+            self.assertIsNone(archive.testzip())
+            for directory in directories:
+                prefix = f'{directory.parent.name}/{directory.name}'
+                self.assertIn(f'{prefix}/manifest.json', archive.namelist())
+                self.assertIn(f'{prefix}/track_0001/motion.json', archive.namelist())
+                self.assertTrue(any(name.startswith(f'{prefix}/track_0001/raw_npz/') and name.endswith('.npz')
+                                    for name in archive.namelist()))
         for directory in directories:
             manifest = json.loads((directory / 'manifest.json').read_text())
             self.assertTrue(manifest['complete'])
@@ -129,6 +143,8 @@ class NotebookBatchTests(unittest.TestCase):
             with np.load(next((directory / 'track_0001/raw_npz').glob('frame_*.npz')), allow_pickle=False) as raw:
                 np.testing.assert_array_equal(raw['pred_keypoints_3d'], pose['frames'][0]['pred_keypoints_3d'])
         repeated = self.run_cell([self.other, self.video])
+        self.assertNotEqual(Path(self.ns['zip_path']), zip_path)
+        self.assertTrue(zip_path.is_file())
         self.assertNotEqual(Path(repeated[0]['output_dir']).parent, directories[0].parent)
         self.assertTrue((directories[0] / 'track_0001/motion.json').is_file())
 

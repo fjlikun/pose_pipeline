@@ -39,6 +39,8 @@ END_SECONDS = None
 
 每次执行创建独立的 `OUTPUT_ROOT/run_时间_随机后缀/`，其中每个视频有 `001_视频名/`、`002_视频名/` 等独立目录。同名视频和再次处理同一视频都不会覆盖旧结果。多人输出包含 `manifest.json`、`track_0001/motion.json` 和 `track_0001/raw_npz/`；单人输出包含 `motion.json` 和 `motion_npz/`。`SAVE_NPZ = False` 可关闭 NPZ。最后一格会输出各视频状态和结果路径，`BATCH_RESULTS` 保留本次已完成视频的路径摘要。
 
+整批视频成功处理后，最后一格继续用 `shutil.make_archive` 将本次 `run_dir` 压缩成同名 ZIP，保存在 Notebook 当前工作目录，并通过 `FileLink` 显示下载链接。压缩包保留整个批次目录及 JSON、NPZ 等文件的相对位置，解压后可继续交给 Blender driver。每次运行创建不同的批次与 ZIP；自动生成的 `run_*.zip` 已加入 Git 忽略规则。压缩代码中的 `folder` 也可手动改为其他已有结果目录。
+
 视频按列表顺序处理，共用一个已加载的 SAM 和检测器，每个视频的跟踪独立从 ID 1 开始。路径列表在推理前统一检查；若运行途中报错会停止，已完成结果保留，失败视频可能留下未完成归档。再次执行会创建新批次目录。每次运行前可直接改视频列表，无需再执行安装、下载、校验和模型加载；重启 kernel 或修改 `DEVICE`、`MULTI_PERSON`、模型路径、检测器设置后，需要重新执行相关准备和模型加载单元。最后一格还会检查检测器与 SAM 设备一致，避免旧 kernel 继续使用之前缓存的 CPU 检测器。
 
 ## 不使用 Notebook：在终端手动准备

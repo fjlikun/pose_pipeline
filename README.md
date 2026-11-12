@@ -67,7 +67,7 @@ pose-blender --blender "/path/to/blender" \
 
 先用两帧验证安装。正式视频处理时删除 `--max-frames 2`；stride=3 表示每三个源帧取一个，不会把动作时间缩短。CPU 可能很慢。以上是保留的单人CPU示例。Notebook默认GPU，假设PyTorch/CUDA已就绪，不重装现有环境；本次没有验证 GPU。输出路径应是新文件，避免覆盖既有结果。
 
-使用 Notebook 时，可在工程根目录执行 `jupyter notebook extractor/video_to_pose.ipynb`，也可单独上传该文件到 Notebook 平台。默认多人模式、GPU；最后一格的 `VIDEOS` 支持单个路径或列表，`MAX_FRAMES=None`、`STRIDE=1`、起点0和无终点默认处理完整视频。试跑时改为 `MAX_FRAMES=30`。同一 kernel 中换视频只需运行最后一格，每次自动创建新的输出目录；详见 [Notebook 批量处理说明](extractor/README.md#只运行最后一格单个视频--视频列表)。
+使用 Notebook 时，可在工程根目录执行 `jupyter notebook extractor/video_to_pose.ipynb`，也可单独上传该文件到 Notebook 平台。默认多人模式、GPU；最后一格的 `VIDEOS` 支持单个路径或列表，`MAX_FRAMES=None`、`STRIDE=1`、起点0和无终点默认处理完整视频。试跑时改为 `MAX_FRAMES=30`。同一 kernel 中换视频只需运行最后一格，每次自动创建新的输出目录；整批完成后自动生成 ZIP 并显示下载链接。详见 [Notebook 批量处理说明](extractor/README.md#只运行最后一格单个视频--视频列表)。
 
 ## 两工程之间的约定
 
