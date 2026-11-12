@@ -7,7 +7,7 @@
 打开 `video_to_pose.ipynb`，按顺序执行准备和推理单元。也可以只把这个 ipynb 上传到 Notebook 平台：第一个配置单元会判断当前位置，项目不存在时，下一单元执行 `git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git`。私有仓库需要预先配置 Git 访问权限，也可修改 `PROJECT_URL` / `PROJECT_BRANCH`（默认 develop）。
 
 1. 选择 **Python 3.11（推荐）或 3.12** kernel，先准备匹配硬件的 PyTorch、torchvision。系统需要 Git；`PACKAGE_MANAGER="uv"` 时还需要已安装的 uv。GPU 平台已有的 PyTorch/CUDA 可继续使用。
-2. 在开头的配置单元修改 `DEVICE`、`MULTI_PERSON`，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。视频路径、输出位置和采样参数集中在最后一个单元格。
+2. 在开头的配置单元修改 `DEVICE`、`MULTI_PERSON`，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。`DETECTOR_DEVICE="auto"` 默认跟随 `DEVICE`，仅在缺少 GPU NMS 时改用 CPU 检测器；SAM 仍用原设备。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。视频路径、输出位置和采样参数集中在最后一个单元格。
 3. 执行项目克隆单元，再执行依赖安装单元。依赖统一来自 **`extractor/requirements.txt`**；命令使用 `sys.executable -m pip`，或 `uv pip --python sys.executable`，安装到当前 kernel。Notebook 会生成 `runtime/torch-constraints.txt`，固定现有 torch/CUDA 相关包版本；其他包仍由 pip/uv 正常解析，可能调整版本，建议使用项目专用环境。
 4. 安装完成后重启 kernel，重新执行配置和项目定位单元，跳过依赖安装单元继续。SAM/DINOv3 单元会执行固定 commit 的 `git clone`、`checkout` 和 `git apply`。`DEVICE="cpu"` 时自动追加 CPU 设备补丁。
 5. 执行 SAM 模型下载单元。默认 ModelScope，可改 `MODEL_SOURCE="huggingface"`。官方 Hugging Face 需事先获准访问，并通过终端 `hf auth login` 或平台 secret 环境变量认证；不要把 token 写进单元格。请先阅读模型与来源的适用许可证。
@@ -39,7 +39,7 @@ END_SECONDS = None
 
 每次执行创建独立的 `OUTPUT_ROOT/run_时间_随机后缀/`，其中每个视频有 `001_视频名/`、`002_视频名/` 等独立目录。同名视频和再次处理同一视频都不会覆盖旧结果。多人输出包含 `manifest.json`、`track_0001/motion.json` 和 `track_0001/raw_npz/`；单人输出包含 `motion.json` 和 `motion_npz/`。`SAVE_NPZ = False` 可关闭 NPZ。最后一格会输出各视频状态和结果路径，`BATCH_RESULTS` 保留本次已完成视频的路径摘要。
 
-视频按列表顺序处理，共用一个已加载的 SAM 和检测器，每个视频的跟踪独立从 ID 1 开始。路径列表在推理前统一检查；若运行途中报错会停止，已完成结果保留，失败视频可能留下未完成归档。再次执行会创建新批次目录。每次运行前可直接改视频列表，无需再执行安装、下载、校验和模型加载；重启 kernel 或修改 `DEVICE`、`MULTI_PERSON`、模型路径、检测器设置后，需要重新执行相关准备和模型加载单元。
+视频按列表顺序处理，共用一个已加载的 SAM 和检测器，每个视频的跟踪独立从 ID 1 开始。路径列表在推理前统一检查；若运行途中报错会停止，已完成结果保留，失败视频可能留下未完成归档。再次执行会创建新批次目录。每次运行前可直接改视频列表，无需再执行安装、下载、校验和模型加载；重启 kernel 或修改 `DEVICE`、`DETECTOR_DEVICE`、`MULTI_PERSON`、模型路径、检测器设置后，需要重新执行相关准备和模型加载单元。
 
 ## 不使用 Notebook：在终端手动准备
 
@@ -68,7 +68,7 @@ py -3.11 -m venv .venv
 
 ### 2. 安装匹配硬件的 PyTorch，再安装 requirements.txt
 
-先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)选择 CPU 或匹配驱动的 CUDA wheel。**CPU 示例**：
+先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)选择 CPU、NVIDIA CUDA 或 AMD ROCm 对应的 PyTorch/torchvision 组合。AMD 用户应使用与系统/GPU 兼容的 ROCm 构建。**CPU 示例**：
 
 ```bash
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
@@ -298,7 +298,27 @@ with Path('requirements-resolved.txt').open('x') as report:  # 已存在则拒�
 
 Notebook有独立检测器下载cell。官方权重URL取自已装torchvision的weight enum，只允许download.pytorch.org的HTTPS域，并验证文件名hash前缀、报告完整SHA256。已有文件匹配则复用、不匹配拒绝；下载/复制中断可能留下partial文件，下一次hash检查会拒绝，需人工处理或选择新路径，不能盲目绕过校验。模型下载与包安装相互独立，不重装torch/CUDA。SAM与检测器同时占显存，需要足够资源；OOM视为错误，不当作无人。
 
-代码遵循[torchvision BSD-3-Clause许可](https://github.com/pytorch/vision/blob/main/LICENSE)，但[预训练模型可能适用训练数据的独立条款](https://github.com/pytorch/vision#pre-trained-model-license)。不要把代码许可自动等同于所有权重用途的许可。检测器下载需显式开关和条款确认；无内置token。
+代码遵循[torchvision BSD-3-Clause许可](https://github.com/pytorch/vision/blob/main/LICENSE)，但[预训练模型可能适用训练数据的独立条款](https://github.com/pytorch/vision#pre-trained-model-license)。不要把代码许可自动等同于所有权重用途的许可。检测器下载通过独立准备单元显式执行；无内置token。
+
+### AMD ROCm / torchvision 缺少 GPU NMS
+
+ROCm 版 PyTorch 同样使用 `torch.cuda.is_available()` 和 `device="cuda"`，因此 AMD GPU 的 `DEVICE` 也应设为 `"cuda"`。`torchvision::nms` 报 `Could not run ... with arguments from the 'CUDA' backend`，且可用 kernel 列表只有 CPU，说明当前 torchvision 构建没有该算子的 GPU 实现；`AutogradCUDA` 或 `AutocastCUDA` 注册项不代表有实际 GPU NMS kernel。
+
+Notebook 默认 `DETECTOR_DEVICE = "auto"`，CLI 默认 `--detector-device auto`：先在 SAM 对应设备用小输入检查 NMS，只在该 GPU 算子报上述 `NotImplementedError` 时明确警告、验证 CPU NMS，并将整个检测器放到 CPU，SAM 继续使用原设备。模型分配/加载前完成这个检查；不会修改全局 torchvision 算子。驱动、显存不足、其他算子或其他运行错误仍会报错。CPU NMS 也不可用时会停止，需要修复 PyTorch/torchvision 安装。
+
+也可显式指定混合运行：
+
+```python
+# Notebook 开头配置单元：SAM 使用 AMD GPU，人物检测使用 CPU
+DEVICE = "cuda"
+DETECTOR_DEVICE = "cpu"
+```
+
+CLI 在原命令中使用 `--device cuda --detector-device cpu`。设为 `DETECTOR_DEVICE = "cuda"` / `--detector-device cuda` 会强制 GPU 检测，缺少 GPU NMS 时给出错误与修复提示，不自动降级。直接使用 Python 类时，通过 `allow_cpu_fallback=True` 显式启用上述兼容行为，默认不启用。
+
+仅检测器改为 CPU 时，无需给 SAM 应用 CPU 补丁；该补丁仍只由 `DEVICE="cpu"` 决定。CPU 检测速度可能降低；正确安装匹配的 PyTorch/torchvision ROCm 构建后可恢复 GPU 检测。导出的 detector metadata 会记录 `requested_device`、实际 `device`、`nms_cpu_fallback`、torch/torchvision 版本及 `rocm_version`，模型加载时也会打印相关信息。
+
+更新 develop 后重新打开新版 Notebook，重启已有 kernel，再按顺序执行配置、项目定位及模型相关单元；已有依赖可跳过安装，已有源码/权重会复用。日志中的旧单视频提取单元可能仍是旧版 Notebook；新版提取位于最后一格并自动分配新输出目录。首次重试可设 `MAX_FRAMES = 1`。本机没有 AMD GPU，兼容逻辑通过模拟缺失 GPU NMS 和实际 CPU 检测验证；不代表已完成 ROCm/SAM 端到端验证。
 
 ### 关联方法与限制
 

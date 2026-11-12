@@ -91,5 +91,7 @@ def check_runtime(sam_repo, dino_repo, checkpoint_dir, target='cpu', expected_ha
     from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
     print(dict(python=sys.version.split()[0], torch=torch.__version__,
                torchvision=torchvision.__version__, av=av.__version__,
+               rocm_version=getattr(torch.version, 'hip', None),
+               cuda_version=getattr(torch.version, 'cuda', None),
                cuda_available=torch.cuda.is_available(), target=target))
     return assets

@@ -22,6 +22,8 @@ Notebook 的安装命令固定已有 torch/CUDA 包版本，其他依赖按 pip/
 
 默认依赖已移除推理未使用的 `xtcocotools`，避免 Linux 源码构建时出现 `No module named 'numpy'`。遇到此错误时，更新 develop 后重新安装；原因见 [依赖安装说明](extractor/README.md#2-安装匹配硬件的-pytorch再安装-requirementstxt)。
 
+AMD ROCm 环境同样使用 `DEVICE="cuda"`。如果 torchvision 缺少 GPU 版 `torchvision::nms`，默认的 `DETECTOR_DEVICE="auto"` 会明确提示并仅将人物检测器放到 CPU，SAM 继续使用 GPU；也可显式设置 `DETECTOR_DEVICE="cpu"`，CLI 对应 `--detector-device cpu`。详见 [ROCm / NMS 说明](extractor/README.md#amd-rocm--torchvision-缺少-gpu-nms)。
+
 ## 文件结构
 
 - `extractor/`：视频解码、SAM 3D Body 调用、70 点 JSON 与逐帧原始数值 NPZ 输出；从 `video_to_pose.ipynb` 或 `extract_video.py` 启动。

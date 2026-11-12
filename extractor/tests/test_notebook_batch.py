@@ -179,18 +179,27 @@ class NotebookBatchTests(unittest.TestCase):
         self.ns.update(SAM_REPO=self.root / 'sam', DINOV3_REPO=self.root / 'dino',
                        CHECKPOINT_DIR=self.root / 'checkpoints', DEVICE='cpu', KNOWN_HASHES={},
                        CHECKPOINT=self.root / 'model.ckpt', MHR_MODEL=self.root / 'mhr.pt',
-                       DETECTOR_WEIGHTS=self.root / 'detector.pth', DETECTOR_THRESHOLD=.7, MAX_PEOPLE=20)
+                       DETECTOR_WEIGHTS=self.root / 'detector.pth', DETECTOR_THRESHOLD=.7, MAX_PEOPLE=20,
+                       DETECTOR_DEVICE='auto')
         self.ns['DETECTOR_WEIGHTS'].touch()
         pose, detector = self.ns['estimator'], self.ns['detector']
-        with redirect_stdout(io.StringIO()), patch.dict(sys.modules, {'torch': self.ns['torch']}), \
-                patch('runtime_checks.check_runtime', return_value={}) as check, \
-                patch.object(extract_video, 'load_estimator', return_value=(pose, {})) as load, \
-                patch.object(multi_person, 'TorchvisionPersonDetector', return_value=detector):
-            exec(compile(CELLS['model-load'], 'notebook:model-load', 'exec'), self.ns)
-        check.assert_called_once()
-        load.assert_called_once()
-        self.assertIs(self.ns['estimator'], pose)
-        self.assertIs(self.ns['detector'], detector)
+        cases = [('cuda', 'auto', 'cuda', True), ('cuda', 'cpu', 'cpu', False),
+                 ('cuda', 'cuda', 'cuda', False), ('cpu', 'auto', 'cpu', True)]
+        for sam_device, choice, expected_device, fallback in cases:
+            with self.subTest(sam_device=sam_device, detector_device=choice):
+                self.ns.update(DEVICE=sam_device, DETECTOR_DEVICE=choice)
+                with redirect_stdout(io.StringIO()), patch.dict(sys.modules, {'torch': self.ns['torch']}), \
+                        patch('runtime_checks.check_runtime', return_value={}) as check, \
+                        patch.object(extract_video, 'load_estimator', return_value=(pose, {})) as load, \
+                        patch.object(multi_person, 'TorchvisionPersonDetector', return_value=detector) as create:
+                    exec(compile(CELLS['model-load'], 'notebook:model-load', 'exec'), self.ns)
+                check.assert_called_once()
+                load.assert_called_once()
+                self.assertEqual(load.call_args.args[3], sam_device)
+                self.assertEqual(create.call_args.kwargs['device'], expected_device)
+                self.assertEqual(create.call_args.kwargs['allow_cpu_fallback'], fallback)
+                self.assertIs(self.ns['estimator'], pose)
+                self.assertIs(self.ns['detector'], detector)
 
     def test_missing_model_reports_setup_step_before_output_creation(self):
         del self.ns['estimator']
