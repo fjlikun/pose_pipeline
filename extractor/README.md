@@ -4,7 +4,7 @@
 
 ## 在 Notebook 环境中使用
 
-打开 `video_to_pose.ipynb`，按顺序执行准备和推理单元。也可以只把这个 ipynb 上传到 Notebook 平台：第一个配置单元会判断当前位置，项目不存在时，下一单元执行 `git clone https://github.com/fjlikun/pose_pipeline.git`。私有仓库需要预先配置 Git 访问权限，也可修改 `PROJECT_URL`。
+打开 `video_to_pose.ipynb`，按顺序执行准备和推理单元。也可以只把这个 ipynb 上传到 Notebook 平台：第一个配置单元会判断当前位置，项目不存在时，下一单元执行 `git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git`。私有仓库需要预先配置 Git 访问权限，也可修改 `PROJECT_URL` / `PROJECT_BRANCH`（默认 develop）。
 
 1. 选择 **Python 3.11（推荐）或 3.12** kernel，先准备匹配硬件的 PyTorch、torchvision。系统需要 Git；`PACKAGE_MANAGER="uv"` 时还需要已安装的 uv。GPU 平台已有的 PyTorch/CUDA 可继续使用。
 2. 在配置单元修改 `VIDEO`、`DEVICE`、输出路径，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。
@@ -15,7 +15,7 @@
 
 每个准备单元执行时才会安装/联网，不再通过 RUN_INSTALL/RUN_GIT_SYNC 等开关调用安装封装。所有命令以 `subprocess.run([...], check=True)` 执行，当前命令失败会停止该单元。不要在错误未解决时继续后续单元。
 
-项目和上游源码目录存在时直接校验，不 pull/reset；已有模型和检测器权重只校验，不覆盖。下载先在临时目录完成并校验，成功后发布；ModelScope 单元启用客户端内置8路大文件并行。重新运行推理前必须换新的输出路径。只克隆项目时跳过 Git LFS 样例视频，需自行设置可用的视频文件。若要使用仓库视频，先用 Git LFS 拉取实体，例如 `git lfs pull --include="文艺甜1023280.mp4"`；只有百余字节的 `.mp4` 是指针，不能直接解码。
+项目和上游源码目录存在时直接校验，不 pull/reset；已有模型和检测器权重只校验，不覆盖。下载先在临时目录完成并校验，成功后发布；ModelScope 单元启用客户端内置8路大文件并行。重新运行推理前必须换新的输出路径。develop 分支不跟踪 MP4，且不包含 Git LFS 资源规则；请自行设置可用的视频路径。Notebook 仅在新目录浅克隆指定分支，已有工程不自动切换分支。本地视频与运行结果由 .gitignore 排除，不会因这次资源剥离而删除。
 
 ## 不使用 Notebook：在终端手动准备
 
@@ -24,8 +24,8 @@
 ### 1. 克隆本项目并选择 Python 环境
 
 ```bash
-# GIT_LFS_SKIP_SMUDGE=1 表示不下载仓库的 Git LFS 样例视频
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/fjlikun/pose_pipeline.git
+# 只获取不含 MP4 的 develop 最新提交
+git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git
 cd pose_pipeline
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -34,8 +34,7 @@ source .venv/bin/activate
 Windows PowerShell 对应：
 
 ```powershell
-$env:GIT_LFS_SKIP_SMUDGE = "1"
-git clone https://github.com/fjlikun/pose_pipeline.git
+git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git
 cd pose_pipeline
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1

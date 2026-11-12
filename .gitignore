@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 runtime/
 *.egg-info/
+# Input and generated MP4 videos are local resources.
+*.[mM][pP]4

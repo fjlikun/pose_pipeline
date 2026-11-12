@@ -65,7 +65,9 @@ class NotebookSetupTests(unittest.TestCase):
 
         def clone(args, **kwargs):
             self.assertTrue(kwargs['check'])
-            self.assertEqual(kwargs['env']['GIT_LFS_SKIP_SMUDGE'], '1')
+            self.assertEqual(args[args.index('--branch') + 1], 'develop')
+            self.assertIn('--single-branch', args)
+            self.assertEqual(args[args.index('--depth') + 1], '1')
             destination = Path(args[-1]) / 'extractor'
             destination.mkdir(parents=True)
             (destination / 'extract_video.py').touch()

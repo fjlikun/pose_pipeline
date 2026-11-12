@@ -2,6 +2,16 @@
 
 本包包含可编辑源码、Notebook、骨骼映射、单元测试和验证说明。同一次视频推理默认同时输出轻量 JSON 和完整数值 NPZ 归档，再用 JSON 驱动原有 Blender 角色。第二个工程不需要安装 SAM 或 PyTorch。
 
+## 只克隆 develop 分支
+
+`develop` 仅保留源码、Notebook、配置、测试与文档，不跟踪 MP4，也不需要 Git LFS 下载样例视频。视频输入自行准备；MP4 已加入 `.gitignore`。
+
+```bash
+git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git
+```
+
+该命令只获取 develop 的最新提交。Notebook 新克隆项目时也默认使用这一方式；已有目录直接复用，不自动切换分支。
+
 ## Notebook 与终端安装入口
 
 - **Notebook 环境**：打开或上传 [`extractor/video_to_pose.ipynb`](extractor/video_to_pose.ipynb)，依次执行本项目 `git clone`、当前 kernel 的 pip/uv 依赖安装、固定版本 SAM/DINOv3 克隆与补丁、模型下载和推理。已有项目目录会直接复用；只上传 Notebook 时会克隆本项目。配置中修改视频路径、`DEVICE` 和 `PACKAGE_MANAGER`。
