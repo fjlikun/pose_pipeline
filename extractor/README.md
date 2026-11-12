@@ -7,15 +7,39 @@
 打开 `video_to_pose.ipynb`，按顺序执行准备和推理单元。也可以只把这个 ipynb 上传到 Notebook 平台：第一个配置单元会判断当前位置，项目不存在时，下一单元执行 `git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git`。私有仓库需要预先配置 Git 访问权限，也可修改 `PROJECT_URL` / `PROJECT_BRANCH`（默认 develop）。
 
 1. 选择 **Python 3.11（推荐）或 3.12** kernel，先准备匹配硬件的 PyTorch、torchvision。系统需要 Git；`PACKAGE_MANAGER="uv"` 时还需要已安装的 uv。GPU 平台已有的 PyTorch/CUDA 可继续使用。
-2. 在配置单元修改 `VIDEO`、`DEVICE`、输出路径，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。
+2. 在开头的配置单元修改 `DEVICE`、`MULTI_PERSON`，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。视频路径、输出位置和采样参数集中在最后一个单元格。
 3. 执行项目克隆单元，再执行依赖安装单元。依赖统一来自 **`extractor/requirements.txt`**；命令使用 `sys.executable -m pip`，或 `uv pip --python sys.executable`，安装到当前 kernel。Notebook 会生成 `runtime/torch-constraints.txt`，固定现有 torch/CUDA 相关包版本；其他包仍由 pip/uv 正常解析，可能调整版本，建议使用项目专用环境。
 4. 安装完成后重启 kernel，重新执行配置和项目定位单元，跳过依赖安装单元继续。SAM/DINOv3 单元会执行固定 commit 的 `git clone`、`checkout` 和 `git apply`。`DEVICE="cpu"` 时自动追加 CPU 设备补丁。
 5. 执行 SAM 模型下载单元。默认 ModelScope，可改 `MODEL_SOURCE="huggingface"`。官方 Hugging Face 需事先获准访问，并通过终端 `hf auth login` 或平台 secret 环境变量认证；不要把 token 写进单元格。请先阅读模型与来源的适用许可证。
-6. 多人模式继续执行检测器权重下载单元；单人模式自动跳过。最后执行本地校验、模型加载和视频提取。先使用默认 `MAX_FRAMES=30` 检查，正式处理再改 `None`。
+6. 多人模式继续执行检测器权重下载单元；单人模式自动跳过。执行本地校验与模型加载单元；该单元不需要先选择视频。
+7. 在最后一个单元格修改 `VIDEOS` 后运行。它支持单个路径或视频列表，默认逐帧处理完整视频；试跑可将 `MAX_FRAMES` 改为 `30`。模型已加载且 kernel 未重启时，之后换视频、重复处理或改采样参数，都只需修改并运行最后一格。
 
 每个准备单元执行时才会安装/联网，不再通过 RUN_INSTALL/RUN_GIT_SYNC 等开关调用安装封装。所有命令以 `subprocess.run([...], check=True)` 执行，当前命令失败会停止该单元。不要在错误未解决时继续后续单元。
 
-项目和上游源码目录存在时直接校验，不 pull/reset；已有模型和检测器权重只校验，不覆盖。下载先在临时目录完成并校验，成功后发布；ModelScope 单元启用客户端内置8路大文件并行。重新运行推理前必须换新的输出路径。develop 分支不跟踪 MP4，且不包含 Git LFS 资源规则；请自行设置可用的视频路径。Notebook 仅在新目录浅克隆指定分支，已有工程不自动切换分支。本地视频与运行结果由 .gitignore 排除，不会因这次资源剥离而删除。
+项目和上游源码目录存在时直接校验，不 pull/reset；已有模型和检测器权重只校验，不覆盖。下载先在临时目录完成并校验，成功后发布；ModelScope 单元启用客户端内置8路大文件并行。Notebook 每次提取自动创建新的输出目录。develop 分支不跟踪 MP4，且不包含 Git LFS 资源规则；请自行设置可用的视频路径。Notebook 仅在新目录浅克隆指定分支，已有工程不自动切换分支。本地视频与运行结果由 .gitignore 排除，不会因这次资源剥离而删除。
+
+### 只运行最后一格：单个视频 / 视频列表
+
+在最后一个单元格直接修改 `VIDEOS`；既可以使用字符串绝对路径，也可以使用 `Path`：
+
+```python
+# 单个视频
+VIDEOS = "/data/input.mp4"
+# 或多个视频（将上面一行替换为列表）
+VIDEOS = ["/data/video1.mp4", "/data/video2.mp4"]
+
+OUTPUT_ROOT = RUNTIME_DIR / "outputs"
+MAX_FRAMES = None
+STRIDE = 1
+START_SECONDS = 0.0
+END_SECONDS = None
+```
+
+`MAX_FRAMES = None` 取消每个视频的采样帧数上限；配合 `STRIDE = 1`、起点 `0.0` 和终点 `None`，才是完整视频的逐帧姿态。`STRIDE > 1` 会抽帧，`MAX_FRAMES = 30` 则限制为每个视频前 30 个采样帧。这些设置对列表中的每个视频分别生效。
+
+每次执行创建独立的 `OUTPUT_ROOT/run_时间_随机后缀/`，其中每个视频有 `001_视频名/`、`002_视频名/` 等独立目录。同名视频和再次处理同一视频都不会覆盖旧结果。多人输出包含 `manifest.json`、`track_0001/motion.json` 和 `track_0001/raw_npz/`；单人输出包含 `motion.json` 和 `motion_npz/`。`SAVE_NPZ = False` 可关闭 NPZ。最后一格会输出各视频状态和结果路径，`BATCH_RESULTS` 保留本次已完成视频的路径摘要。
+
+视频按列表顺序处理，共用一个已加载的 SAM 和检测器，每个视频的跟踪独立从 ID 1 开始。路径列表在推理前统一检查；若运行途中报错会停止，已完成结果保留，失败视频可能留下未完成归档。再次执行会创建新批次目录。每次运行前可直接改视频列表，无需再执行安装、下载、校验和模型加载；重启 kernel 或修改 `DEVICE`、`MULTI_PERSON`、模型路径、检测器设置后，需要重新执行相关准备和模型加载单元。
 
 ## 不使用 Notebook：在终端手动准备
 

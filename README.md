@@ -14,7 +14,7 @@ git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/
 
 ## Notebook 与终端安装入口
 
-- **Notebook 环境**：打开或上传 [`extractor/video_to_pose.ipynb`](extractor/video_to_pose.ipynb)，依次执行本项目 `git clone`、当前 kernel 的 pip/uv 依赖安装、固定版本 SAM/DINOv3 克隆与补丁、模型下载和推理。已有项目目录会直接复用；只上传 Notebook 时会克隆本项目。配置中修改视频路径、`DEVICE` 和 `PACKAGE_MANAGER`。
+- **Notebook 环境**：打开或上传 [`extractor/video_to_pose.ipynb`](extractor/video_to_pose.ipynb)，依次执行本项目 `git clone`、当前 kernel 的 pip/uv 依赖安装、固定版本 SAM/DINOv3 克隆与补丁、模型下载和加载。已有项目目录会直接复用；只上传 Notebook 时会克隆本项目。开头配置 `DEVICE` 和 `PACKAGE_MANAGER`；视频路径和提取参数在最后一格，加载模型后只修改并运行最后一格即可处理单个或多个视频。
 - **依赖清单**：统一使用 [`extractor/requirements.txt`](extractor/requirements.txt)，包含 SAM Python 依赖、视频处理、Notebook 和下载客户端。先准备适配硬件的 PyTorch/torchvision，再执行 `python -m pip install -r extractor/requirements.txt`，或 `uv pip install --python /path/to/python -r extractor/requirements.txt`。
 - **非 Notebook 环境**：按 [`extractor/README.md` 的终端手动准备步骤](extractor/README.md#不使用-notebook在终端手动准备)完成项目克隆、虚拟环境、CPU/CUDA PyTorch、pip/uv、上游源码与补丁、SAM/检测器权重下载，再运行 CLI。提供 Bash 和 PowerShell 示例。
 
@@ -63,7 +63,7 @@ pose-blender --blender "/path/to/blender" \
 
 先用两帧验证安装。正式视频处理时删除 `--max-frames 2`；stride=3 表示每三个源帧取一个，不会把动作时间缩短。CPU 可能很慢。以上是保留的单人CPU示例。Notebook默认GPU，假设PyTorch/CUDA已就绪，不重装现有环境；本次没有验证 GPU。输出路径应是新文件，避免覆盖既有结果。
 
-使用 Notebook 时，可在工程根目录执行 `jupyter notebook extractor/video_to_pose.ipynb`，也可单独上传该文件到 Notebook 平台。逐项修改配置，按新准备单元执行；默认多人模式、GPU、`MAX_FRAMES=30`，正式运行再改成 `None`。
+使用 Notebook 时，可在工程根目录执行 `jupyter notebook extractor/video_to_pose.ipynb`，也可单独上传该文件到 Notebook 平台。默认多人模式、GPU；最后一格的 `VIDEOS` 支持单个路径或列表，`MAX_FRAMES=None`、`STRIDE=1`、起点0和无终点默认处理完整视频。试跑时改为 `MAX_FRAMES=30`。同一 kernel 中换视频只需运行最后一格，每次自动创建新的输出目录；详见 [Notebook 批量处理说明](extractor/README.md#只运行最后一格单个视频--视频列表)。
 
 ## 两工程之间的约定
 
