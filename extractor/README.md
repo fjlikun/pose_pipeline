@@ -100,13 +100,24 @@ Linux 安装旧版清单时，`xtcocotools` 可能报 `ModuleNotFoundError: No m
 
 以下命令用于新的 `runtime/` 目录；已有 checkout 不要再次 clone/apply，先核对其版本和修改：
 
+源码默认从 Gitee 镜像克隆：[SAM 3D Body](https://gitee.com/plab/sam-3d-body)、[DINOv3](https://gitee.com/nandy2022/dinov3)。仍固定下面的 commit，以沿用本工程补丁和运行校验。
+
 ```bash
 mkdir -p runtime
-git clone --no-checkout https://github.com/facebookresearch/sam-3d-body.git runtime/sam-3d-body
+git clone --no-checkout https://gitee.com/plab/sam-3d-body.git runtime/sam-3d-body
 git -C runtime/sam-3d-body checkout --detach b5c765a0d89d789985e186d396315e7590887b94
-git clone --no-checkout https://github.com/facebookresearch/dinov3.git runtime/dinov3
+git clone --no-checkout https://gitee.com/nandy2022/dinov3.git runtime/dinov3
 git -C runtime/dinov3 checkout --detach 6876159a11b4df116f30f667f8c9888617df0751
 ```
+
+已有 GitHub checkout 且 commit 正确时，在项目根目录更新 origin 即可复用；以下命令不重新下载源码，也不修改已有补丁和模型文件：
+
+```bash
+git -C runtime/sam-3d-body remote set-url origin https://gitee.com/plab/sam-3d-body.git
+git -C runtime/dinov3 remote set-url origin https://gitee.com/nandy2022/dinov3.git
+```
+
+Notebook 会校验 origin；迁移后重新执行源码检查单元，已应用的相同补丁会跳过。更新工程后如旧 kernel 已导入 `runtime_checks`，请先重启 kernel 使新地址生效。
 
 PowerShell 的目录创建命令可用 `New-Item -ItemType Directory -Force runtime`。补丁路径必须是绝对路径：
 

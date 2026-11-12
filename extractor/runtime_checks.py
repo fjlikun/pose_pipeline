@@ -9,9 +9,9 @@ import os
 import subprocess
 import sys
 
-SAM_URL = 'https://github.com/facebookresearch/sam-3d-body.git'
+SAM_URL = 'https://gitee.com/plab/sam-3d-body.git'
 SAM_COMMIT = 'b5c765a0d89d789985e186d396315e7590887b94'
-DINO_URL = 'https://github.com/facebookresearch/dinov3.git'
+DINO_URL = 'https://gitee.com/nandy2022/dinov3.git'
 DINO_COMMIT = '6876159a11b4df116f30f667f8c9888617df0751'
 MODEL_ID = 'facebook/sam-3d-body-dinov3'
 MODEL_FILES = ('model.ckpt', 'model_config.yaml', 'assets/mhr_model.pt')

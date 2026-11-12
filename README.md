@@ -20,6 +20,8 @@ git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/
 
 Notebook 的安装命令固定已有 torch/CUDA 包版本，其他依赖按 pip/uv 正常解析。安装后重启 kernel，重跑配置与项目定位单元，再跳过安装单元继续。准备命令实际执行才联网，不再由 RUN_INSTALL 等开关间接调用。
 
+SAM / DINOv3 源码默认从 Gitee 镜像克隆：[plab/sam-3d-body](https://gitee.com/plab/sam-3d-body.git)、[nandy2022/dinov3](https://gitee.com/nandy2022/dinov3.git)，继续使用工程固定的 commit。已有 GitHub checkout 的迁移命令见 [源码准备说明](extractor/README.md#3-克隆固定版本的-sam--dinov3-并应用补丁)。
+
 默认依赖已移除推理未使用的 `xtcocotools`，避免 Linux 源码构建时出现 `No module named 'numpy'`。遇到此错误时，更新 develop 后重新安装；原因见 [依赖安装说明](extractor/README.md#2-安装匹配硬件的-pytorch再安装-requirementstxt)。
 
 AMD ROCm 环境同样使用 `DEVICE="cuda"`。如果 torchvision 缺少 GPU 版 `torchvision::nms`，默认的 `DETECTOR_DEVICE="auto"` 会明确提示并仅将人物检测器放到 CPU，SAM 继续使用 GPU；也可显式设置 `DETECTOR_DEVICE="cpu"`，CLI 对应 `--detector-device cpu`。详见 [ROCm / NMS 说明](extractor/README.md#amd-rocm--torchvision-缺少-gpu-nms)。
