@@ -3,7 +3,6 @@ from pathlib import Path
 import json
 import math
 import os
-import warnings
 import numpy as np
 from extract_video import COORDINATES, validate_document
 from npz_archive import NPZArchive
@@ -64,48 +63,36 @@ class IoUTracker:
 def _probe_detector_nms(device):
     """Exercise the compiled operator on the requested backend, without a model."""
     import torch
+    import torchvision
     from torchvision.ops import nms
     boxes = torch.tensor([[0., 0., 2., 2.], [0., 0., 1., 1.]], device=device, dtype=torch.float32)
     scores = torch.tensor([.9, .8], device=device, dtype=torch.float32)
-    nms(boxes, scores, .5)
-
-
-def _select_detector_device(device, allow_cpu_fallback):
     try:
-        _probe_detector_nms(device)
+        nms(boxes, scores, .5)
     except NotImplementedError as exc:
         if device != 'cuda' or 'torchvision::nms' not in str(exc):
             raise
-        if not allow_cpu_fallback:
-            raise RuntimeError(
-                "torchvision::nms has no GPU kernel in this torchvision build. "
-                "Set DETECTOR_DEVICE='cpu' in the notebook or --detector-device cpu in the CLI, "
-                "or install matching PyTorch/torchvision CUDA/ROCm builds. SAM can keep device='cuda'."
-            ) from exc
-        _probe_detector_nms('cpu')  # CPU must support the operator before selecting it.
-        warnings.warn(
-            "torchvision::nms has no GPU kernel; the person detector will run on CPU. "
-            "SAM keeps its configured device. CPU detection may be slower. "
-            "Use DETECTOR_DEVICE='cpu' / --detector-device cpu to select it explicitly, "
-            "or install matching PyTorch/torchvision CUDA/ROCm builds.",
-            RuntimeWarning, stacklevel=3,
-        )
-        return 'cpu'
-    return device
+        raise RuntimeError(
+            "torchvision::nms has no GPU kernel in this torchvision build. "
+            "SAM and the detector must use the same configured device. "
+            "Install matching PyTorch/torchvision CUDA/ROCm builds and restart the kernel; "
+            "GPU availability alone does not confirm torchvision GPU operator support. "
+            f"Installed: torch={torch.__version__}, torchvision={torchvision.__version__}, "
+            f"ROCm={getattr(torch.version, 'hip', None)}."
+        ) from exc
 
 
 class TorchvisionPersonDetector:
     """Uses a local official Faster R-CNN v2 checkpoint. Constructor never downloads."""
-    def __init__(self,weights_path,device='cuda',score_threshold=.7,max_people=20,*,allow_cpu_fallback=False):
+    def __init__(self,weights_path,device='cuda',score_threshold=.7,max_people=20):
         import torch
         from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
         if device not in ('cpu','cuda'): raise ValueError('Choose cpu or cuda')
-        if device=='cuda' and not torch.cuda.is_available(): raise RuntimeError('CUDA unavailable; choose CPU explicitly')
+        if device=='cuda' and not torch.cuda.is_available(): raise RuntimeError('GPU unavailable; check your PyTorch CUDA/ROCm build and driver')
         if not 0<score_threshold<=1 or max_people<1: raise ValueError('Invalid detector parameters')
         path=Path(weights_path)
         if not path.is_file(): raise FileNotFoundError('Run the explicit detector-download cell first')
-        requested_device=device
-        device=_select_detector_device(device,allow_cpu_fallback)
+        _probe_detector_nms(device)
         self.torch=torch;self.device=device;self.threshold=score_threshold;self.max_people=max_people
         self.model=fasterrcnn_resnet50_fpn_v2(weights=None,weights_backbone=None)
         self.model.load_state_dict(torch.load(path,map_location='cpu',weights_only=True),strict=True)
@@ -114,7 +101,6 @@ class TorchvisionPersonDetector:
         import torchvision
         self.metadata=dict(torchvision_version=torchvision.__version__,weights_sha256=sha256(path),model='torchvision/fasterrcnn_resnet50_fpn_v2/COCO_V1',
                            score_threshold=score_threshold,max_people=max_people,device=device,weights_file=path.name,
-                           requested_device=requested_device,nms_cpu_fallback=device!=requested_device,
                            torch_version=torch.__version__,rocm_version=getattr(torch.version,'hip',None))
 
     def detect(self,rgb):
@@ -260,9 +246,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('video','output-dir','repo','checkpoint','mhr','detector-weights'):
         p.add_argument('--'+name,required=True)
-    p.add_argument('--device',choices=['cuda','cpu'],default='cuda')
-    p.add_argument('--detector-device',choices=['auto','cuda','cpu'],default='auto',
-                   help='auto follows --device and uses a CPU detector if GPU torchvision NMS is missing; SAM is unchanged')
+    p.add_argument('--device',choices=['cuda','cpu'],default='cuda',
+                   help='Shared SAM/person detector device; AMD ROCm also uses cuda')
     p.add_argument('--stride',type=int,default=1)
     p.add_argument('--max-frames',type=int)
     p.add_argument('--start-seconds',type=float,default=0)
@@ -276,11 +261,9 @@ def main():
     args=p.parse_args()
     if Path(args.output_dir).exists(): raise FileExistsError('Choose a new output directory')
     from extract_video import load_estimator
-    estimator,metadata=load_estimator(args.repo,args.checkpoint,args.mhr,args.device)
     detector=TorchvisionPersonDetector(args.detector_weights,
-        device=args.device if args.detector_device=='auto' else args.detector_device,
-        score_threshold=args.detector_threshold,max_people=args.max_people,
-        allow_cpu_fallback=args.detector_device=='auto')
+        device=args.device,score_threshold=args.detector_threshold,max_people=args.max_people)
+    estimator,metadata=load_estimator(args.repo,args.checkpoint,args.mhr,args.device)
     print('SAM device:',args.device,'detector:',detector.metadata)
     import torch
     with torch.inference_mode():

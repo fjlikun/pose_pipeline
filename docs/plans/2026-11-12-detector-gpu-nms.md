@@ -1,5 +1,7 @@
 # Detector GPU NMS compatibility Implementation Plan
 
+Historical: the CPU fallback described here was superseded by [the shared-device change](2026-11-13-shared-device.md). The following results document the previous implementation.
+
 **Goal:** Handle the reported missing torchvision GPU NMS kernel while keeping SAM on the configured AMD/ROCm GPU.
 
 **Architecture:** Probe detector NMS before constructing/loading Faster R-CNN. Only an explicitly enabled fallback for the reported GPU NMS NotImplementedError may select a CPU detector; preserve all other failures. Keep SAM's device independent. Expose auto/cpu/cuda detector selection in the notebook and CLI, record requested/actual detector devices, and explain ROCm's use of the cuda device name.

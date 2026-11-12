@@ -24,7 +24,7 @@ SAM / DINOv3 源码默认从 Gitee 镜像克隆：[plab/sam-3d-body](https://git
 
 默认依赖已移除推理未使用的 `xtcocotools`，避免 Linux 源码构建时出现 `No module named 'numpy'`。遇到此错误时，更新 develop 后重新安装；原因见 [依赖安装说明](extractor/README.md#2-安装匹配硬件的-pytorch再安装-requirementstxt)。
 
-AMD ROCm 环境同样使用 `DEVICE="cuda"`。如果 torchvision 缺少 GPU 版 `torchvision::nms`，默认的 `DETECTOR_DEVICE="auto"` 会明确提示并仅将人物检测器放到 CPU，SAM 继续使用 GPU；也可显式设置 `DETECTOR_DEVICE="cpu"`，CLI 对应 `--detector-device cpu`。详见 [ROCm / NMS 说明](extractor/README.md#amd-rocm--torchvision-缺少-gpu-nms)。
+SAM 与人物检测器统一使用 `DEVICE`（CLI 为 `--device`），AMD ROCm 环境同样设为 `"cuda"`。已移除独立检测器设备选项和 CPU 降级；若 torchvision 缺少 GPU 版 `torchvision::nms`，加载时会停止并提示安装匹配的 CUDA/ROCm 构建。详见 [ROCm / NMS 说明](extractor/README.md#amd-rocm--torchvision-缺少-gpu-nms)。
 
 ## 文件结构
 

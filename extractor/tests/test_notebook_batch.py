@@ -34,6 +34,7 @@ class FakePose:
 
 class FakeDetector:
     metadata = {'model': 'test detector'}
+    device = 'test'
 
     def detect(self, image):
         return [dict(bbox=[4, 8, 28, 48], score=.95)]
@@ -179,15 +180,12 @@ class NotebookBatchTests(unittest.TestCase):
         self.ns.update(SAM_REPO=self.root / 'sam', DINOV3_REPO=self.root / 'dino',
                        CHECKPOINT_DIR=self.root / 'checkpoints', DEVICE='cpu', KNOWN_HASHES={},
                        CHECKPOINT=self.root / 'model.ckpt', MHR_MODEL=self.root / 'mhr.pt',
-                       DETECTOR_WEIGHTS=self.root / 'detector.pth', DETECTOR_THRESHOLD=.7, MAX_PEOPLE=20,
-                       DETECTOR_DEVICE='auto')
+                       DETECTOR_WEIGHTS=self.root / 'detector.pth', DETECTOR_THRESHOLD=.7, MAX_PEOPLE=20)
         self.ns['DETECTOR_WEIGHTS'].touch()
         pose, detector = self.ns['estimator'], self.ns['detector']
-        cases = [('cuda', 'auto', 'cuda', True), ('cuda', 'cpu', 'cpu', False),
-                 ('cuda', 'cuda', 'cuda', False), ('cpu', 'auto', 'cpu', True)]
-        for sam_device, choice, expected_device, fallback in cases:
-            with self.subTest(sam_device=sam_device, detector_device=choice):
-                self.ns.update(DEVICE=sam_device, DETECTOR_DEVICE=choice)
+        for sam_device in ('cuda', 'cpu'):
+            with self.subTest(sam_device=sam_device):
+                self.ns['DEVICE'] = sam_device
                 with redirect_stdout(io.StringIO()), patch.dict(sys.modules, {'torch': self.ns['torch']}), \
                         patch('runtime_checks.check_runtime', return_value={}) as check, \
                         patch.object(extract_video, 'load_estimator', return_value=(pose, {})) as load, \
@@ -196,10 +194,18 @@ class NotebookBatchTests(unittest.TestCase):
                 check.assert_called_once()
                 load.assert_called_once()
                 self.assertEqual(load.call_args.args[3], sam_device)
-                self.assertEqual(create.call_args.kwargs['device'], expected_device)
-                self.assertEqual(create.call_args.kwargs['allow_cpu_fallback'], fallback)
+                self.assertEqual(create.call_args.kwargs['device'], sam_device)
+                self.assertNotIn('allow_cpu_fallback', create.call_args.kwargs)
                 self.assertIs(self.ns['estimator'], pose)
                 self.assertIs(self.ns['detector'], detector)
+
+    def test_cached_cpu_detector_with_gpu_sam_is_rejected_before_output_creation(self):
+        self.ns['runtime_metadata']['device'] = 'cuda'
+        self.ns['detector'].device = 'cpu'
+        with self.assertRaisesRegex(RuntimeError, '同.*设备'):
+            self.run_cell(self.video)
+        self.assertEqual(self.ns['estimator'].calls, 0)
+        self.assertFalse((self.root / 'outputs').exists())
 
     def test_missing_model_reports_setup_step_before_output_creation(self):
         del self.ns['estimator']
