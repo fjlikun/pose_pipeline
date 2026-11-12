@@ -66,9 +66,11 @@ uv pip check --python .venv/bin/python
 
 Windows 的 uv 命令将 Python 路径改为 `.venv\Scripts\python.exe`。如果要使用 Notebook 生成的框架约束，在 install 命令后加 `-c runtime/torch-constraints.txt`。
 
-依赖清单以 [固定 SAM commit 的 INSTALL.md 第3节](https://github.com/facebookresearch/sam-3d-body/blob/b5c765a0d89d789985e186d396315e7590887b94/INSTALL.md)为基线，列出其35项 Python 依赖；`appnope` 仅在 macOS 安装，未被本推理管线导入的评测依赖 `xtcocotools` 在 Windows 跳过（缺少兼容 wheel，源码包还缺 NumPy 构建声明）。另加视频、Notebook、构建工具及下载客户端。ModelScope 固定为 1.29.2，以使用本文的 `python -m modelscope.cli.cli` 接口；Hugging Face 客户端使用提供 `hf` 的 0.34–0.x 系列。这不是完整跨平台 lockfile。
+依赖清单以 [固定 SAM commit 的 INSTALL.md 第3节](https://github.com/facebookresearch/sam-3d-body/blob/b5c765a0d89d789985e186d396315e7590887b94/INSTALL.md)为基线；`appnope` 仅在 macOS 安装，`xtcocotools` 在所有平台均从默认依赖中移除：固定版本 SAM 源码及本推理管线都不导入它。另加视频、Notebook、构建工具及下载客户端。ModelScope 固定为 1.29.2，以使用本文的 `python -m modelscope.cli.cli` 接口；Hugging Face 客户端使用提供 `hf` 的 0.34–0.x 系列。这不是完整跨平台 lockfile。
 
-本工程使用 torchvision 检测器，不需要 Detectron2、MoGe 或 SAM3。ModelScope 1.29.2 CLI 仍导入 pkg_resources，因此清单固定 `setuptools<81`。某些平台的 xtcocotools/pycocotools 等需要本机编译工具和匹配的 NumPy ABI，单个 requirements 文件不能代替系统 C/C++ 编译器。构建失败时应先按对应包说明准备工具链。`ffmpeg` Python 包也不提供系统 ffmpeg 可执行文件；只有后续需要合成 MP4 时才另行安装系统 ffmpeg。
+Linux 安装旧版清单时，`xtcocotools` 可能报 `ModuleNotFoundError: No module named 'numpy'`。它的源码构建脚本会导入 NumPy，但没有声明对应构建依赖；pip/uv 的隔离构建环境无法读取当前环境已装的 NumPy，所以先安装 NumPy 或调整 requirements 行顺序也不保证解决。更新到 develop 最新版本，再运行上面的 pip/uv 命令或重新执行 Notebook 安装单元即可，无需安装 `xtcocotools` 或全局关闭构建隔离。
+
+本工程使用 torchvision 检测器，不需要 Detectron2、MoGe 或 SAM3。ModelScope 1.29.2 CLI 仍导入 pkg_resources，因此清单固定 `setuptools<81`。某些平台的 pycocotools 等需要本机编译工具和匹配的 NumPy ABI，单个 requirements 文件不能代替系统 C/C++ 编译器。构建失败时应先按对应包说明准备工具链。`ffmpeg` Python 包也不提供系统 ffmpeg 可执行文件；只有后续需要合成 MP4 时才另行安装系统 ffmpeg。
 
 ### 3. 克隆固定版本的 SAM / DINOv3 并应用补丁
 

@@ -20,6 +20,8 @@ git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/
 
 Notebook 的安装命令固定已有 torch/CUDA 包版本，其他依赖按 pip/uv 正常解析。安装后重启 kernel，重跑配置与项目定位单元，再跳过安装单元继续。准备命令实际执行才联网，不再由 RUN_INSTALL 等开关间接调用。
 
+默认依赖已移除推理未使用的 `xtcocotools`，避免 Linux 源码构建时出现 `No module named 'numpy'`。遇到此错误时，更新 develop 后重新安装；原因见 [依赖安装说明](extractor/README.md#2-安装匹配硬件的-pytorch再安装-requirementstxt)。
+
 ## 文件结构
 
 - `extractor/`：视频解码、SAM 3D Body 调用、70 点 JSON 与逐帧原始数值 NPZ 输出；从 `video_to_pose.ipynb` 或 `extract_video.py` 启动。

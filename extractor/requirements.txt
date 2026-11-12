@@ -34,9 +34,8 @@ ffmpeg
 cython
 jsonlines
 pytest
-# Upstream evaluation dependency; this inference pipeline does not import it.
-# No compatible Windows wheel; its source build also omits NumPy build metadata.
-xtcocotools; sys_platform != "win32"
+# Omit upstream's unused xtcocotools on all platforms: its source build
+# imports NumPy without declaring it as a build dependency.
 loguru
 optree
 fvcore
