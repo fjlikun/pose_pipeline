@@ -3,6 +3,10 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext, redirect_stdout
+import io
+import types
+from unittest.mock import patch
 from pathlib import Path
 from fractions import Fraction
 import numpy as np
@@ -58,7 +62,7 @@ class ExtractTests(unittest.TestCase):
                              pred_cam_t=np.array([1,2,3],dtype=np.float64),
                              nested={'a/b':np.array([7],dtype=np.int16)},
                              mask=None, label='not pickled')]
-        data=extract(self.video,self.root/'rich.json',RichEstimator(),stride=3,max_frames=2)
+        data=extract(self.video,self.root/'rich.json',RichEstimator(),stride=3,max_frames=2,save_npz=True)
         archive=self.root/'rich_npz'
         manifest=json.loads((archive/'manifest.json').read_text())
         self.assertTrue(manifest['complete'])
@@ -83,26 +87,26 @@ class ExtractTests(unittest.TestCase):
                 if self.count==2: return []
                 if self.count==3: raise RuntimeError('test error')
                 return super().process_one_image(*a,**kw)
-        extract(self.video,self.root/'mixed.json',Mixed(),max_frames=3,continue_on_error=True)
+        extract(self.video,self.root/'mixed.json',Mixed(),max_frames=3,continue_on_error=True,save_npz=True)
         records=[json.loads(line) for line in (self.root/'mixed_npz/frames.jsonl').read_text().splitlines()]
         self.assertEqual([r['status'] for r in records],['ok','missing','error'])
         self.assertIsNone(records[1]['npz_file']);self.assertIsNone(records[2]['npz_file'])
     def test_archive_refuses_existing_directory(self):
         archive=self.root/'existing';archive.mkdir();(archive/'keep').write_text('original')
         with self.assertRaises(FileExistsError):
-            extract(self.video,self.root/'out.json',FakeEstimator(),npz_dir=archive,overwrite=True)
+            extract(self.video,self.root/'out.json',FakeEstimator(),npz_dir=archive,overwrite=True,save_npz=True)
         self.assertEqual((archive/'keep').read_text(),'original')
     def test_disable_npz_and_uncompressed(self):
-        extract(self.video,self.root/'disabled.json',FakeEstimator(),max_frames=1,save_npz=False)
+        extract(self.video,self.root/'disabled.json',FakeEstimator(),max_frames=1)
         self.assertFalse((self.root/'disabled_npz').exists())
-        extract(self.video,self.root/'plain.json',FakeEstimator(),max_frames=1,npz_compressed=False)
+        extract(self.video,self.root/'plain.json',FakeEstimator(),max_frames=1,npz_compressed=False,save_npz=True)
         with np.load(self.root/'plain_npz/frame_000000000.npz',allow_pickle=False) as raw:
             self.assertEqual(raw['pred_keypoints_3d'].shape,(70,3))
     def test_failed_run_is_partial_archive(self):
         class Fails(FakeEstimator):
             def process_one_image(self,*a,**kw): raise RuntimeError('fail')
         with self.assertRaises(RuntimeError):
-            extract(self.video,self.root/'partial.json',Fails())
+            extract(self.video,self.root/'partial.json',Fails(),save_npz=True)
         self.assertFalse(json.loads((self.root/'partial_npz/manifest.json').read_text())['complete'])
         self.assertFalse((self.root/'partial.json').exists())
     def test_json_archive_path_collisions_fail_before_inference(self):
@@ -115,9 +119,22 @@ class ExtractTests(unittest.TestCase):
                             archive/'nested'/'output.json']:
             with self.subTest(destination=destination):
                 with self.assertRaisesRegex(ValueError,'outside'):
-                    extract(self.video,destination,MustNotRun(),npz_dir=archive)
+                    extract(self.video,destination,MustNotRun(),npz_dir=archive,save_npz=True)
                 self.assertFalse(archive.exists())
     def test_nan_start_rejected(self):
         with self.assertRaises(ValueError): extract(self.video,self.root/'nan.json',FakeEstimator(),start_seconds=float('nan'))
+    def test_cli_json_default_and_opt_in_raw_archive(self):
+        import extract_video
+        for index,flags in enumerate(([],['--save-npz'],['--no-npz'])):
+            output=self.root/f'cli_{index}.json'
+            argv=['extract_video.py','--video',str(self.video),'--output',str(output),
+                  '--repo','sam','--checkpoint','model.ckpt','--mhr','mhr.pt','--max-frames','1',*flags]
+            with patch.object(sys,'argv',argv), \
+                    patch.dict(sys.modules,{'torch':types.SimpleNamespace(inference_mode=nullcontext)}), \
+                    patch.object(extract_video,'load_estimator',return_value=(FakeEstimator(),{})), \
+                    redirect_stdout(io.StringIO()):
+                extract_video.main()
+            validate_document(json.loads(output.read_text()))
+            self.assertEqual((self.root/f'cli_{index}_npz').exists(),flags==['--save-npz'])
 
 if __name__=='__main__': unittest.main()

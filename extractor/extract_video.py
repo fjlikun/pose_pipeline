@@ -53,7 +53,7 @@ def preflight_archive(output, npz_dir=None):
 
 def extract(video, output, estimator, *, stride=1, max_frames=None, bbox=None,
             start_seconds=0.0, end_seconds=None, inference_type='body',
-            metadata=None, continue_on_error=False, overwrite=False, save_npz=True,
+            metadata=None, continue_on_error=False, overwrite=False, save_npz=False,
             npz_dir=None, npz_compressed=True):
     preflight(video, output, overwrite)
     archive_path = preflight_archive(output, npz_dir) if save_npz else None
@@ -196,12 +196,17 @@ def main():
     p.add_argument('--inference-type', choices=['body','full'], default='body')
     p.add_argument('--continue-on-error', action='store_true')
     p.add_argument('--overwrite', action='store_true')
-    p.add_argument('--no-npz', action='store_true', help='Disable default raw numeric archive')
+    archives = p.add_mutually_exclusive_group()
+    archives.add_argument('--save-npz', dest='save_npz', action='store_true', help='Also save full raw numeric archive')
+    archives.add_argument('--no-npz', dest='save_npz', action='store_false', help='JSON only (default)')
+    p.set_defaults(save_npz=False)
     p.add_argument('--npz-dir', help='New directory for per-frame NPZ and manifest')
     p.add_argument('--npz-uncompressed', action='store_true', help='Less CPU, generally more disk')
     a = p.parse_args()
     preflight(a.video, a.output, a.overwrite)
-    if not a.no_npz:
+    if not a.save_npz and (a.npz_dir or a.npz_uncompressed):
+        p.error('--npz-dir and --npz-uncompressed require --save-npz')
+    if a.save_npz:
         preflight_archive(a.output, a.npz_dir)
     estimator, meta = load_estimator(a.repo,a.checkpoint,a.mhr,a.device,a.threads)
     import torch
@@ -209,7 +214,7 @@ def main():
         data = extract(a.video,a.output,estimator,stride=a.stride,max_frames=a.max_frames,
                        bbox=a.bbox,start_seconds=a.start_seconds,end_seconds=a.end_seconds,
                        inference_type=a.inference_type,metadata=meta,continue_on_error=a.continue_on_error,overwrite=a.overwrite,
-                       save_npz=not a.no_npz,npz_dir=a.npz_dir,npz_compressed=not a.npz_uncompressed)
+                       save_npz=a.save_npz,npz_dir=a.npz_dir,npz_compressed=not a.npz_uncompressed)
     print(f"Saved {len(data['frames'])} sampled frames to {a.output}")
 
 if __name__ == '__main__':

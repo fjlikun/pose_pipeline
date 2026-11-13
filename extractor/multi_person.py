@@ -1,12 +1,14 @@
-"""Torchvision person detection + deterministic predictive-IoU tracks + per-person JSON 1.0."""
+"""Person detection + observed/predicted bbox IoU tracks + per-person JSON 1.0."""
 from pathlib import Path
 import json
 import math
 import os
+from time import perf_counter
 import numpy as np
 from extract_video import COORDINATES, validate_document
 from npz_archive import NPZArchive
 from scene_position import estimate, unavailable, finalize_sample, METADATA
+from frame_timing import FrameTiming, model_synchronizer
 
 
 def atomic_json(path,data):
@@ -23,7 +25,7 @@ def iou(a,b):
 
 
 class IoUTracker:
-    """Greedy global IoU matching with constant-velocity box prediction; NO appearance ReID."""
+    """Match observed boxes first, then predictions; one-to-one and no appearance ReID."""
     def __init__(self,iou_threshold=.25,max_missing_seconds=1.0):
         if not 0<iou_threshold<=1 or not math.isfinite(max_missing_seconds) or max_missing_seconds<0:
             raise ValueError('Invalid tracking thresholds')
@@ -38,16 +40,25 @@ class IoUTracker:
         for k in expired: del self.active[k]
         # Detection order does not determine identities; births sorted by coordinates.
         detections=sorted(detections,key=lambda d:tuple(d['bbox']))
-        candidates=[]
-        for track_id,state in self.active.items():
-            predicted=state['bbox']+state['velocity']*(t-state['last_seen'])
-            for j,d in enumerate(detections):
-                score=iou(predicted,np.asarray(d['bbox'],dtype=float))
-                if score>=self.threshold: candidates.append((-score,track_id,j))
         matches={};used=set()
-        for _,track_id,j in sorted(candidates):
-            if track_id in matches or j in used: continue
-            matches[track_id]=detections[j];used.add(j)
+        # An extrapolation can overshoot when a person stops, reverses, or the
+        # detector jitters. Preserve actual overlapping observations before
+        # considering predicted motion for the remaining unmatched pairs.
+        for method in ('observed_iou','predicted_iou'):
+            candidates=[]
+            for track_id,state in self.active.items():
+                if track_id in matches: continue
+                box=state['bbox']
+                if method=='predicted_iou':
+                    box=box+state['velocity']*(t-state['last_seen'])
+                for j,d in enumerate(detections):
+                    if j in used: continue
+                    score=iou(box,np.asarray(d['bbox'],dtype=float))
+                    if score>=self.threshold: candidates.append((-score,track_id,j))
+            for negative_score,track_id,j in sorted(candidates):
+                if track_id in matches or j in used: continue
+                matches[track_id]=dict(detections[j],association=method,association_iou=-negative_score)
+                used.add(j)
         for track_id,d in matches.items():
             state=self.active[track_id];box=np.asarray(d['bbox'],dtype=float)
             velocity=(box-state['bbox'])/(t-state['last_seen'])
@@ -56,7 +67,7 @@ class IoUTracker:
             if j in used: continue
             track_id=self.next_id;self.next_id+=1
             self.active[track_id]=dict(bbox=np.asarray(d['bbox'],dtype=float),velocity=np.zeros(4),last_seen=t,born=t)
-            matches[track_id]=d
+            matches[track_id]=dict(d,association='new_track',association_iou=None)
         return matches,dict(self.active),expired
 
 
@@ -127,9 +138,27 @@ def clean_detections(detections,width,height):
     return result
 
 
+def suppress_duplicate_detections(detections,iou_threshold=.7):
+    """Keep the highest score for strongly overlapping same-frame boxes.
+
+    A threshold of 1.0 disables this extra suppression. Inputs must already be
+    validated/clipped by clean_detections; ordering is deterministic on ties.
+    """
+    if not 0<iou_threshold<=1:
+        raise ValueError('Duplicate IoU threshold must be in (0, 1]')
+    kept=[]
+    for detection in sorted(detections,key=lambda d:(-d['score'],tuple(d['bbox']))):
+        box=np.asarray(detection['bbox'],dtype=float)
+        if any(iou(box,np.asarray(other['bbox'],dtype=float))>iou_threshold for other in kept):
+            continue
+        kept.append(detection)
+    return kept
+
+
 def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None,
                   start_seconds=0.0,end_seconds=None,iou_threshold=.25,max_missing_seconds=1.0,
-                  inference_type='body',save_npz=True,npz_compressed=True,continue_on_error=False,metadata=None):
+                  duplicate_iou_threshold=.7,
+                  inference_type='body',save_npz=False,npz_compressed=True,continue_on_error=False,metadata=None):
     """Decode once; detector/tracker run on sampled frames; output one JSON 1.0 per track."""
     import av
     src=Path(video).resolve();root=Path(output_dir).resolve()
@@ -139,9 +168,13 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
     if not math.isfinite(start_seconds) or start_seconds<0 or (end_seconds is not None and (not math.isfinite(end_seconds) or end_seconds<=start_seconds)):
         raise ValueError('Invalid time interval')
     tracker=IoUTracker(iou_threshold,max_missing_seconds)
+    suppress_duplicate_detections([],duplicate_iou_threshold)
+    synchronize=model_synchronizer(estimator,detector)
     root.mkdir(parents=True)
     manifest=dict(multi_export_version='1.0',complete=False,tracks=[],sample_index='samples.jsonl',
-                  source_video=src.name,detector=getattr(detector,'metadata',{'model':'custom detector'}),tracking=dict(method='greedy_constant_velocity_iou',iou_threshold=iou_threshold,
+                  timings_file='timings.jsonl',
+                  source_video=src.name,detector=getattr(detector,'metadata',{'model':'custom detector'}),tracking=dict(method='greedy_observed_then_predicted_iou',iou_threshold=iou_threshold,
+                  duplicate_iou_threshold=duplicate_iou_threshold,
                   max_missing_seconds=max_missing_seconds,appearance_reidentification=False),metadata=metadata or {})
     atomic_json(root/'manifest.json',manifest)
     records={};archives={};sample_count=0;first_pts=None;previous=None;camera_frames=[]
@@ -153,7 +186,9 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
         common=dict(detector=getattr(detector,'metadata',{'model':'custom detector'}),source_video=src.name,source_fps_fraction=str(rate),stride=stride,start_seconds=start_seconds,
                     end_seconds=end_seconds,inference_type=inference_type,person_selection='tracked detection bbox',
                     temporal_smoothing=False,tracking=manifest['tracking'],**(metadata or {}))
+        decode_started=perf_counter()
         for frame_index,frame in enumerate(container.decode(stream)):
+            decoded_at=perf_counter()
             if frame.pts is None or frame.time_base is None: raise ValueError('Missing video PTS; transcode first')
             pts=float(frame.pts*frame.time_base)
             if first_pts is None: first_pts=pts
@@ -161,11 +196,20 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
             if previous is not None and t<=previous: raise ValueError('Non-increasing PTS')
             previous=t
             if end_seconds is not None and t>end_seconds: break
-            if t<start_seconds or frame_index%stride: continue
-            rgb=frame.to_ndarray(format='rgb24')
+            if t<start_seconds or frame_index%stride:
+                decode_started=perf_counter()
+                continue
+            timing=FrameTiming(synchronize,decode_started)
+            timing.stages['decode']=decoded_at-decode_started
+            with timing.measure('rgb_conversion'):
+                rgb=frame.to_ndarray(format='rgb24')
             # Detector failure is fatal; never silently pretend it means no people.
-            detections=clean_detections(detector.detect(rgb),width,height)
-            matches,active,expired=tracker.update(detections,t)
+            with timing.measure('detection'):
+                raw_detections=clean_detections(detector.detect(rgb),width,height)
+            with timing.measure('bbox_dedup'):
+                detections=suppress_duplicate_detections(raw_detections,duplicate_iou_threshold)
+            with timing.measure('tracking'):
+                matches,active,expired=tracker.update(detections,t)
             states=dict(expired)  # Integer IDs preserved; expiration recorded once.
             states.update(active)
             sample_entries=[];sample_predictions={}
@@ -174,9 +218,10 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                     folder=root/f'track_{track_id:04d}';folder.mkdir()
                     records[track_id]=dict(frames=[],born=t,last_detection=t,expired_at=None,folder=folder)
                     if save_npz:
-                        archives[track_id]=NPZArchive(folder/'raw_npz',estimator,
-                            dict(track_id=track_id,fps=fps,width=width,height=height,coordinates=COORDINATES,
-                                 source_first_pts_seconds=first_pts,**common),npz_compressed)
+                        with timing.measure('raw_archive_write'):
+                            archives[track_id]=NPZArchive(folder/'raw_npz',estimator,
+                                dict(track_id=track_id,fps=fps,width=width,height=height,coordinates=COORDINATES,
+                                     source_first_pts_seconds=first_pts,**common),npz_compressed)
                 record=records[track_id]
                 entry=dict(frame_index=frame_index,time_seconds=t,status='missing',pred_keypoints_3d=None,
                            bbox=state['bbox'].tolist(),track_id=track_id,bbox_source='last_observed')
@@ -187,9 +232,13 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                     entry['reason']='detection_missing'
                 else:
                     record['last_detection']=t
-                    entry.update(bbox=matches[track_id]['bbox'],bbox_source='detected',detection_score=matches[track_id]['score'])
+                    observed=matches[track_id]
+                    entry.update(bbox=observed['bbox'],bbox_source='detected',detection_score=observed['score'],
+                                 association=observed['association'],association_iou=observed['association_iou'])
+                    sam_before=timing.stages['sam']
                     try:
-                        result=estimator.process_one_image(rgb,bboxes=np.asarray([entry['bbox']],dtype=np.float32),inference_type=inference_type)
+                        with timing.measure('sam'):
+                            result=estimator.process_one_image(rgb,bboxes=np.asarray([entry['bbox']],dtype=np.float32),inference_type=inference_type)
                         if not result: entry['reason']='pose_missing'
                         elif len(result)!=1: raise ValueError('Expected exactly one pose from one tracked bbox')
                         else:
@@ -199,19 +248,33 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                     except Exception as exc:
                         if not continue_on_error: raise
                         entry.update(status='error',error=f'{type(exc).__name__}: {exc}')
-                entry['scene_position']=estimate(prediction,width,height) if entry['status']=='ok' else unavailable('pose_'+entry['status'],width,height)
+                    finally:
+                        timing.sam_calls.append(dict(track_id=track_id,seconds=timing.stages['sam']-sam_before,status=entry['status']))
+                with timing.measure('scene_position'):
+                    entry['scene_position']=estimate(prediction,width,height) if entry['status']=='ok' else unavailable('pose_'+entry['status'],width,height)
                 sample_entries.append(entry)
                 sample_predictions[track_id]=prediction
                 record['frames'].append(entry)
-            camera_frames.append(finalize_sample(sample_entries,width,height,frame_index,t))
-            for entry in sample_entries:
-                if entry['track_id'] in archives: archives[entry['track_id']].append(entry,sample_predictions[entry['track_id']])
+            with timing.measure('scene_position'):
+                camera_frames.append(finalize_sample(sample_entries,width,height,frame_index,t))
+            if archives:
+                with timing.measure('raw_archive_write'):
+                    for entry in sample_entries:
+                        if entry['track_id'] in archives: archives[entry['track_id']].append(entry,sample_predictions[entry['track_id']])
             sample=dict(frame_index=frame_index,time_seconds=t,detection_count=len(detections),
+                        raw_detection_count=len(raw_detections),duplicate_detection_count=len(raw_detections)-len(detections),
                         observed_track_ids=sorted(matches),active_track_ids=sorted(active),expired_track_ids=sorted(expired))
-            with (root/'samples.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(sample,allow_nan=False)+'\n')
+            with timing.measure('sample_index_write'):
+                with (root/'samples.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(sample,allow_nan=False)+'\n')
+            timing_record=timing.record(frame_index,t,len(detections))
+            timing_record['raw_archive_enabled']=save_npz
+            with (root/'timings.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(timing_record,allow_nan=False)+'\n')
             sample_count+=1
-            print(f'frame={frame_index} time={t:.6f}s detected={len(detections)} tracks={sorted(matches)}',flush=True)
+            print(f'frame={frame_index} time={t:.6f}s detected={len(detections)} tracks={sorted(matches)} '
+                  f'detect={timing.stages["detection"]:.4f}s sam={timing.stages["sam"]:.4f}s total={timing_record["frame_total_seconds"]:.4f}s',flush=True)
             if max_frames is not None and sample_count>=max_frames: break
+            decode_started=perf_counter()
+    finalization_started=perf_counter()
     common['source_first_pts_seconds']=first_pts
     common['scene_position']=METADATA
     for track_id,record in sorted(records.items()):
@@ -235,8 +298,12 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
     manifest.update(complete=True,sampled_frames=sample_count,fps=fps,width=width,height=height,
                     source_first_pts_seconds=first_pts,status='no_samples' if sample_count==0 else ('ok' if any(r['successful_frames'] for r in manifest['tracks']) else 'no_valid_people'))
     if not (root/'samples.jsonl').exists(): (root/'samples.jsonl').touch()
+    if not (root/'timings.jsonl').exists(): (root/'timings.jsonl').touch()
     atomic_json(root/'camera_frames.json',camera_frames)
     manifest.update(scene_position_metadata=METADATA,camera_frames_file='camera_frames.json')
+    manifest['timing_metadata']=dict(units='seconds',gpu_timing_policy='synchronize_at_stage_boundaries',
+        includes_model_loading=False,includes_skipped_frame_decode=False,
+        finalization_before_manifest_seconds=perf_counter()-finalization_started)
     atomic_json(root/'manifest.json',manifest)
     return manifest
 
@@ -255,8 +322,13 @@ def main():
     p.add_argument('--detector-threshold',type=float,default=.7)
     p.add_argument('--max-people',type=int,default=20)
     p.add_argument('--iou-threshold',type=float,default=.25)
+    p.add_argument('--duplicate-iou-threshold',type=float,default=.7,
+                   help='Suppress same-frame duplicate boxes above this IoU; 1 disables suppression')
     p.add_argument('--max-missing-seconds',type=float,default=1.0)
-    p.add_argument('--no-npz',action='store_true')
+    archives=p.add_mutually_exclusive_group()
+    archives.add_argument('--save-npz',dest='save_npz',action='store_true',help='Also save full raw numeric archives')
+    archives.add_argument('--no-npz',dest='save_npz',action='store_false',help='JSON only (default)')
+    p.set_defaults(save_npz=False)
     p.add_argument('--continue-on-error',action='store_true')
     args=p.parse_args()
     if Path(args.output_dir).exists(): raise FileExistsError('Choose a new output directory')
@@ -269,7 +341,7 @@ def main():
     with torch.inference_mode():
         manifest=extract_multi(args.video,args.output_dir,estimator,detector,stride=args.stride,max_frames=args.max_frames,
             start_seconds=args.start_seconds,end_seconds=args.end_seconds,iou_threshold=args.iou_threshold,
-            max_missing_seconds=args.max_missing_seconds,save_npz=not args.no_npz,
+            max_missing_seconds=args.max_missing_seconds,duplicate_iou_threshold=args.duplicate_iou_threshold,save_npz=args.save_npz,
             continue_on_error=args.continue_on_error,metadata=metadata)
     print('Completed:',manifest['status'],'tracks:',len(manifest['tracks']))
 

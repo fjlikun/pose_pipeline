@@ -1,6 +1,6 @@
-# 工程 1：视频 → 人体姿态 JSON + NPZ
+# 工程 1：视频 → 人体姿态 JSON（可选原始 NPZ）
 
-支持单人和多人。Notebook 默认 GPU + 多人模式，输出每条检测轨迹的 JSON、原始 NPZ 和用于共享 Blender 场景的相机相对位置。JSON 是与 Blender 工程的交接文件，Blender 环境无需安装模型依赖。
+支持单人和多人。Notebook 默认 GPU + 多人模式，输出每条检测轨迹的 JSON 和用于共享 Blender 场景的相机相对位置。原始 NPZ 默认关闭，只有明确需要原始网格/参数时才开启。JSON 是与 Blender 工程的交接文件，Blender 环境无需安装模型依赖。
 
 ## 在 Notebook 环境中使用
 
@@ -37,7 +37,7 @@ END_SECONDS = None
 
 `MAX_FRAMES = None` 取消每个视频的采样帧数上限；配合 `STRIDE = 1`、起点 `0.0` 和终点 `None`，才是完整视频的逐帧姿态。`STRIDE > 1` 会抽帧，`MAX_FRAMES = 30` 则限制为每个视频前 30 个采样帧。这些设置对列表中的每个视频分别生效。
 
-每次执行创建独立的 `OUTPUT_ROOT/run_时间_随机后缀/`，其中每个视频有 `001_视频名/`、`002_视频名/` 等独立目录。同名视频和再次处理同一视频都不会覆盖旧结果。多人输出包含 `manifest.json`、`track_0001/motion.json` 和 `track_0001/raw_npz/`；单人输出包含 `motion.json` 和 `motion_npz/`。`SAVE_NPZ = False` 可关闭 NPZ。最后一格会输出各视频状态和结果路径，`BATCH_RESULTS` 保留本次已完成视频的路径摘要。
+每次执行创建独立的 `OUTPUT_ROOT/run_时间_随机后缀/`，其中每个视频有 `001_视频名/`、`002_视频名/` 等独立目录。同名视频和再次处理同一视频都不会覆盖旧结果。多人默认输出 `manifest.json`、`samples.jsonl`、`camera_frames.json` 和逐轨 `motion.json`；单人默认只有 `motion.json`。`SAVE_NPZ = True` 才额外创建多人 `track_0001/raw_npz/` 或单人 `motion_npz/`。最后一格会输出各视频状态和结果路径，`BATCH_RESULTS` 保留本次已完成视频的路径摘要。详细内容与消费者见 [输出文件说明](OUTPUT_FILES.md)。
 
 整批视频成功处理后，最后一格继续用 `shutil.make_archive` 将本次 `run_dir` 压缩成同名 ZIP，保存在 Notebook 当前工作目录，并通过 `FileLink` 显示下载链接。压缩包保留整个批次目录及 JSON、NPZ 等文件的相对位置，解压后可继续交给 Blender driver。每次运行创建不同的批次与 ZIP；自动生成的 `run_*.zip` 已加入 Git 忽略规则。压缩代码中的 `folder` 也可手动改为其他已有结果目录。
 
@@ -235,11 +235,11 @@ python extract_video.py --video input.mp4 --output motion.json \
 
 PyAV 解码使用原始 PTS，缺 PTS 或不递增会拒绝并要求先转成恒定帧率。解码错误会中止，不猜测不可解码帧的时间。默认不覆盖已有 JSON；只有显式 --overwrite / overwrite=True 才原子替换。禁止输出路径等于输入视频。
 
-## 原始 NPZ 归档（默认开启）
+## 原始 NPZ 归档（默认关闭）
 
-当前真实链路是 **同一次 SAM 返回 → 并行输出 JSON 与 NPZ**，不是先生成 NPZ 再从磁盘读取转换。JSON 1.0 仍仅包含驱动所需的 70×3 点及时间等数据，Blender 工程不需要 NPZ。NPZ 用于保存更完整的数值结果，方便后续网格、相机、姿态分析，不需要重复模型推理。
+当前默认链路是 **SAM 返回 → 写 JSON → 丢弃不再使用的原始大数组**，不先写临时 NPZ。多人位置和相机摘要直接从内存中的预测生成，即使不保留 NPZ 也可驱动共享 Blender 场景。JSON 1.0 包含驱动所需的 70×3 点、时间及多人位置等数据，Blender 工程不需要 NPZ。按需开启 NPZ 可保存完整数值结果，方便后续网格、相机、姿态分析。
 
-默认输出 `motion.json` 时，同时创建新目录 `motion_npz/`：
+显式设置 `save_npz=True`、Notebook `SAVE_NPZ=True` 或 CLI `--save-npz` 后，输出 `motion.json` 时额外创建新目录 `motion_npz/`：
 
 - `manifest.json`：archive_version、complete、压缩选项、源视频/FPS/尺寸/坐标/运行参数及 assets 文件名。只有 JSON 校验与保存完成后 complete 才变为 true。
 - `frames.jsonl`：每个采样帧一行，包含 frame_index、time_seconds、status、bbox、npz_file、每个数组的 shape/dtype、omitted_fields。按行读取即可，不需一次加载全部记录。
@@ -255,12 +255,12 @@ NPZ 中各字段保持上游原生语义，**不能把所有数组都解释为�
 **不会覆盖已有 NPZ 目录**，即使 --overwrite 允许替换 JSON，也需指定新的 --npz-dir；避免旧帧残留混入新运行。参数：
 
 ```sh
-# 默认压缩 NPZ；显式选择新目录
-python extract_video.py ... --output motion.json --npz-dir run_02_npz
+# 按需开启压缩 NPZ；显式选择新目录
+python extract_video.py ... --output motion.json --save-npz --npz-dir run_02_npz
 # 不压缩，通常更快但更占磁盘
-python extract_video.py ... --output motion.json --npz-uncompressed
-# 仅需要原来的 JSON
-python extract_video.py ... --output motion.json --no-npz
+python extract_video.py ... --output motion.json --save-npz --npz-uncompressed
+# 默认仅输出 JSON；--no-npz 也继续有效
+python extract_video.py ... --output motion.json
 ```
 
 Notebook 对应 SAVE_NPZ、NPZ_COMPRESSED；单人模式使用 JSON 同名的默认 NPZ 目录，需自定义归档路径时使用 CLI 的 --npz-dir。`...` 表示仍需填前面 CLI 示例的 video/repo/checkpoint/mhr 参数，不是可原样运行的完整命令。
@@ -332,9 +332,11 @@ CLI 在原命令中使用 `--device cuda`。加载单元先检查并加载检测
 
 ### 关联方法与限制
 
-在每个**采样帧**运行检测，然后以constant-velocity bbox预测计算IoU，按最高IoU优先贪心一对一关联；新轨按bbox坐标排序分配递增track_id，检测返回顺序变化不直接改变ID。实现不依赖额外跟踪框架或外观模型。
+在每个**采样帧**运行检测，先按分数保留同帧高重叠框中的一个，再将上一实际 bbox 与当前 bbox 比较。IoU = 交集面积 / 并集面积，达到 `TRACK_IOU_THRESHOLD`（CLI `--iou-threshold`，默认0.25）时按最高IoU优先贪心一对一关联；对未匹配轨迹/检测再用constant-velocity预测框补充匹配。人物停下、反向或检测框抖动时，不再只依赖可能偏离的预测框。每个检测至多对应一个track；新轨按bbox坐标排序分配递增ID，检测返回顺序变化不直接改变ID。
 
-`MAX_MISSING_SECONDS` 是距最后实际检测的真实秒数，默认1秒；短时失检但未超TTL，仍匹配到预测框就保留ID。超过TTL后回归得到**新ID**，不会做跨离场身份恢复。它不是可靠身份重识别：交叉、严重遮挡、快运动、相似轨迹会交换/拆分ID，需人工核对。没有精度评测或身份保持保证。
+同帧重复框使用独立阈值 `DUPLICATE_IOU_THRESHOLD`（CLI `--duplicate-iou-threshold`，默认0.7），IoU**超过**此值仅保留高分框；设为1.0关闭额外去重。真实人物高度重叠时也可能被抑制，可提高此阈值或关闭。跨帧阈值越低越容易延续轨迹，也越容易关联错人；越高越容易拆轨。匹配结果在每帧 JSON 的 `association`（observed_iou / predicted_iou / new_track）和 `association_iou` 中记录，便于排查拆轨。
+
+`MAX_MISSING_SECONDS` 是距最后实际检测的真实秒数，默认1秒；短时失检但未超TTL，仍匹配到最后实际框或预测框就保留ID。超过TTL后回归得到**新ID**，不会做跨离场身份恢复。它不是可靠身份重识别：交叉、严重遮挡、快运动、相似轨迹会交换/拆分ID，需人工核对。track目录数量不是实际人数。
 
 `STRIDE` 越大越容易关联失败。TTL必须大于正常采样间隔（约stride/source FPS），否则连续采样看到同一个人也可能每次新ID。VFR以真实PTS差值为准。没有在被跳过的源帧运行检测。
 
@@ -346,18 +348,20 @@ CLI 在原命令中使用 `--device cuda`。加载单元先检查并加载检测
 motion_multi/
   manifest.json
   samples.jsonl
+  camera_frames.json
+  timings.jsonl
   track_0001/motion.json
-  track_0001/raw_npz/{manifest.json, frames.jsonl, assets.npz, frame_*.npz}
   track_0002/motion.json
   ...
 ```
 
 - 每个 motion.json 保持schema1.0，单帧仍70×3；metadata/帧增加track_id，原Blender loader可忽略附加字段。源frame_index/time_seconds不因某人晚进入而归零，fps仍源fps。每人单独JSON传给原Blender driver，不需升级消费者协议。
-- 根manifest的multi_export_version是**汇总清单版本**，不是替换姿态JSON协议。包含各轨JSON/NPZ路径、成功帧数、首次/最后检测时间、过期时间和状态。samples.jsonl逐采样帧记录检测数、observed/active/expired IDs。
+- 根manifest的multi_export_version是**汇总清单版本**，不是替换姿态JSON协议。包含各轨JSON/NPZ路径、成功帧数、首次/最后检测时间、过期时间和状态；默认npz_directory=null。samples.jsonl逐采样帧记录去重前/后检测数、抑制数和observed/active/expired IDs，Blender共享场景也用其时间戳确定整段时间线。camera_frames.json供共享镜头焦距读取/一致性检查使用。
 - 在人物首次检测前不造帧；存在轨迹但漏检时status=missing、points=null，bbox_source=last_observed（保留最后观察框，不把预测框当测量）。过期帧记录一次track_expired然后结束该轨。只对本帧真实检测框推理。
 - 检测到人但SAM无输出为pose_missing；开启continue_on_error可记录逐人pose异常为error。检测器失败始终中止，避免把故障伪装为无人。NPZ写入失败同样中止。
-- 每轨NPZ帧索引与JSON一致，frames.jsonl有track_id，archive metadata有track_id/源时间/坐标。丢失帧不制造原始预测NPZ。每轨faces只保存一次。完整原始数值保留策略与单人模式一致。
-- 全视频无人时manifest.complete=true、status=no_valid_people、tracks为空，不输出假的motion.json；选定区间无采样时status=no_samples。单轨所有pose失败时只留failed_frames.json和raw档案，清单status=no_valid_pose、json_file=null，不能作为Blender输入。原始归档complete=true只表示归档完成，不保证有有效姿态，需看pose_export_status。
+- 默认不生成每轨raw_npz目录。显式开启后，每轨NPZ帧索引与JSON一致，frames.jsonl有track_id，archive metadata有track_id/源时间/坐标。丢失帧不制造原始预测NPZ，每轨faces只保存一次。详细文件内容和用途见 [输出文件说明](OUTPUT_FILES.md)。
+- timings.jsonl逐采样帧记录解码、RGB转换、检测、bbox去重、跟踪、逐人SAM、位置计算和写盘耗时；CUDA/ROCm阶段边界会同步设备。逐人SAM调用明细在sam_calls；模型加载、跳过帧解码与最终汇总JSON写盘不计入逐帧总时间，具体口径见 [输出文件说明](OUTPUT_FILES.md#逐帧耗时的口径)。
+- 全视频无人时manifest.complete=true、status=no_valid_people、tracks为空，不输出假的motion.json；选定区间无采样时status=no_samples。单轨所有pose失败时只留failed_frames.json及显式开启的raw档案，清单status=no_valid_pose、json_file=null，不能作为Blender输入。原始归档complete=true只表示归档完成，不保证有有效姿态，需看pose_export_status。
 - 中断时root manifest.complete=false，可能仍有各track partial NPZ；根tracks汇总到结束才写入，不代表中途没有写过轨迹。不支持自动续跑/合并。请检查清单，不能将partial结果当完整动画。
 - 内存保存全部轨迹关键点列表（非恒定内存），原始大数组逐帧写盘。成本随采样帧×人数增长；长视频建议分段。默认max_frames按**全视频采样帧数**计，不按人数累计。
 
@@ -371,7 +375,7 @@ python multi_person.py --video input.mp4 --output-dir motion_multi \
   --mhr /path/to/checkpoints/assets/mhr_model.pt \
   --detector-weights /path/to/detector/fasterrcnn_resnet50_fpn_v2_coco.pth \
   --device cuda --stride 1 --max-frames 30 \
-  --detector-threshold 0.7 --iou-threshold 0.25 --max-missing-seconds 1.0
+  --detector-threshold 0.7 --iou-threshold 0.25 --duplicate-iou-threshold 0.7 --max-missing-seconds 1.0
 ```
 
 单人仍用extract_video.py，或Notebook MULTI_PERSON=False。CPU运行须显式应用cpu_device.patch并选device=cpu；不会改装CPU torch。

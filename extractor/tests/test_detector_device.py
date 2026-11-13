@@ -112,6 +112,20 @@ class DetectorDeviceTests(unittest.TestCase):
                 multi_person.main()
         load.assert_not_called()
 
+    def test_cli_archive_options_and_duplicate_threshold(self):
+        for flags,expected in (([],False),(['--save-npz'],True),(['--no-npz'],False)):
+            with self.subTest(flags=flags):
+                torch=types.SimpleNamespace(inference_mode=nullcontext)
+                argv=self.cli_args('cpu')+flags+['--duplicate-iou-threshold','0.85']
+                with patch.object(sys,'argv',argv),patch.dict(sys.modules,{'torch':torch}), \
+                        patch.object(extract_video,'load_estimator',return_value=(object(),{})), \
+                        patch.object(multi_person,'TorchvisionPersonDetector'), \
+                        patch.object(multi_person,'extract_multi',return_value={'status':'ok','tracks':[]}) as extract, \
+                        redirect_stdout(io.StringIO()):
+                    multi_person.main()
+                self.assertEqual(extract.call_args.kwargs['save_npz'],expected)
+                self.assertEqual(extract.call_args.kwargs['duplicate_iou_threshold'],.85)
+
 
 if __name__ == '__main__':
     unittest.main()

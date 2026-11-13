@@ -1,6 +1,6 @@
 # 视频姿态 → Blender：两个独立工程
 
-本包包含可编辑源码、Notebook、骨骼映射、单元测试和验证说明。同一次视频推理默认同时输出轻量 JSON 和完整数值 NPZ 归档，再用 JSON 驱动原有 Blender 角色。第二个工程不需要安装 SAM 或 PyTorch。
+本包包含可编辑源码、Notebook、骨骼映射、单元测试和验证说明。视频推理默认输出用于 Blender 驱动的轻量 JSON；完整数值 NPZ 归档需显式开启。第二个工程不需要安装 SAM 或 PyTorch。
 
 ## 只克隆 develop 分支
 
@@ -100,11 +100,13 @@ python -m unittest discover -s tests -v
 
 完整实测范围与未验证项以 `QA_RESULTS.md` 及各工程验证记录为准。第三方源码、权重和 Blender 仍分别受其许可证约束。
 
-## 新增：默认保留完整数值 NPZ
+## 默认 JSON 驱动，NPZ 按需开启
 
-输出 `motion.json` 时默认同时创建 `motion_npz/`，包含 manifest、逐帧索引、帧 NPZ 和单独一次保存的 faces。保存 SAM estimator 返回的全部数值字段，保留 dtype/shape；不包含模型内部中间激活。Blender 仍只读取 JSON，不需要 NPZ。
+默认只保存 JSON，Notebook 的 `SAVE_NPZ=False`。只有设为 `True`，或 CLI 指定 `--save-npz` 时，才额外创建单人 `motion_npz/` 或逐轨 `raw_npz/`，保存 SAM estimator 返回的数值字段及 faces；不包含模型内部中间激活。Blender 只读取 JSON，不需要 NPZ，多人位置已在推理时直接写入 `motion.json`。
 
-可用 `--npz-dir` 选择新归档目录、`--npz-uncompressed` 关闭压缩，或 `--no-npz` 只输出 JSON。JSON 文件必须在归档目录外，已有归档目录不会覆盖。Notebook 有 SAVE_NPZ / NPZ_COMPRESSED 参数；多人目录由track_id独立组织，单人使用JSON同名_npz目录。完整参数、读取示例和失败归档处理见 extractor/README.md。
+单人 CLI 开启归档后可用 `--npz-dir` 选择新目录、`--npz-uncompressed` 关闭压缩；`--no-npz` 保留为兼容选项。JSON 文件必须在归档目录外，已有归档目录不会覆盖。各输出文件的内容和实际用途见 [输出文件说明](extractor/OUTPUT_FILES.md)。
+
+多人关联先比较上一实际 bbox 与当前 bbox 的交并比（`TRACK_IOU_THRESHOLD=0.25`，CLI `--iou-threshold`），达到阈值就做一对一关联，再用预测框补充未匹配目标。同帧重复框按独立阈值 `DUPLICATE_IOU_THRESHOLD=0.7` 去重。交叉、长时间遮挡和离场回归仍可能更换 ID，track 数不等于真人数。
 
 CPU 两帧归档已经实测与独立复核：每帧 16 个模型数值字段和 2 个时间上下文字段，NPZ 关键点与 JSON 完全一致，allow_pickle=False 可读。归档逐帧写盘，但 JSON 关键点仍随帧数占用内存；长视频应分段并预留磁盘，不承诺恒定内存、实时速度或普遍压缩倍数。第三方字段仍保留上游语义，不可一概视为米或 XYZ。
 
@@ -120,7 +122,7 @@ Notebook 已改为显式命令单元：本项目 git clone、pip/uv 读取 requi
 
 requirements.txt 覆盖固定 SAM 版本 INSTALL.md 的35项Python依赖及视频/Notebook/下载客户端。先准备 PyTorch/torchvision，再用 pip 或 uv 安装；Notebook 会为已有框架包生成版本约束。依赖冲突、系统编译工具和二进制 ABI 仍需在目标环境验证。
 
-多人功能现已实现于 extractor/multi_person.py：torchvision Faster R-CNN person检测、预测bbox IoU关联、每个track独立JSON1.0与NPZ。原Blender driver仍可每次导入一个track的motion.json；新增shared_cli可以创建共享多人场景，但不恢复真实世界位移。Notebook包含显式依赖安装、固定源码克隆、SAM和detector权重下载、GPU/CPU条件补丁及推理单元。检测/跟踪真实视频精度与GPU端到端尚未实测。
+多人功能现已实现于 extractor/multi_person.py：torchvision Faster R-CNN person检测、实际框优先/预测框补充的IoU关联、每个track独立JSON1.0，可按需开启NPZ。原Blender driver仍可每次导入一个track的motion.json；新增shared_cli可以创建共享多人场景，但不恢复真实世界位移。Notebook包含显式依赖安装、固定源码克隆、SAM和detector权重下载、GPU/CPU条件补丁及推理单元。GPU端到端与身份保持精度尚未验证。
 
 多人测试：`python extractor/tests/test_multi_person.py`。依赖PyAV/NumPy，使用真实临时视频编解码与模拟detector/SAM，不能视为真实模型精度验证。
 
@@ -147,4 +149,4 @@ track-ids应按自己的manifest选择；省略时导入全部有效track，不�
 
 单独交付的 `two_people_overview.blend` 与第1/7帧PNG是演示与验收材料：来源是静态截图拼接的双区域幻灯片，仅0和0.5秒两个推理采样，并非真实连续双人动作视频。角色倒置或悬空保留推理结果，未人为纠正。PNG使用Workbench检查几何和布局，不是照片级灯光材质验收。完整独立结果见 `INDEPENDENT_REVIEW.md`。这些演示文件不嵌入源码ZIP。
 
-当前测试：提取器53项（含14项Notebook准备流程和11项只读检查测试）、Blender driver13项。已删除旧安装/下载封装对应的测试；详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。
+当前测试：提取器84项、Blender driver13项。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。

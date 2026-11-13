@@ -3,6 +3,9 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 runtime/
+# Generated outputs stay local.
+/output/
+/outputs/
 run_*.zip
 *.egg-info/
 # Input and generated MP4 videos are local resources.

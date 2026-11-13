@@ -101,10 +101,10 @@ class NotebookBatchTests(unittest.TestCase):
     def test_single_path_and_repeat_reuse_models_without_overwriting(self):
         self.ns['MULTI_PERSON'] = False
         estimator = self.ns['estimator']
-        first = self.run_cell(str(self.video))
+        first = self.run_cell(str(self.video), SAVE_NPZ=True)
         first_dir = Path(first[0]['output_dir'])
         original = (first_dir / 'motion.json').read_bytes()
-        second = self.run_cell(self.video)
+        second = self.run_cell(self.video, SAVE_NPZ=True)
         second_dir = Path(second[0]['output_dir'])
         self.assertNotEqual(first_dir, second_dir)
         self.assertEqual((first_dir / 'motion.json').read_bytes(), original)
@@ -118,7 +118,7 @@ class NotebookBatchTests(unittest.TestCase):
             np.testing.assert_array_equal(raw['pred_keypoints_3d'], data['frames'][0]['pred_keypoints_3d'])
 
     def test_batch_same_names_have_independent_tracking_and_archives(self):
-        results = self.run_cell([self.video, self.other])
+        results = self.run_cell([self.video, self.other], SAVE_NPZ=True)
         self.assertEqual(len(results), 2)
         directories = [Path(r['output_dir']) for r in results]
         self.assertNotEqual(*directories)
@@ -142,20 +142,30 @@ class NotebookBatchTests(unittest.TestCase):
             self.assertEqual([f['frame_index'] for f in pose['frames']], [0, 1, 2, 3])
             with np.load(next((directory / 'track_0001/raw_npz').glob('frame_*.npz')), allow_pickle=False) as raw:
                 np.testing.assert_array_equal(raw['pred_keypoints_3d'], pose['frames'][0]['pred_keypoints_3d'])
-        repeated = self.run_cell([self.other, self.video])
+        repeated = self.run_cell([self.other, self.video], SAVE_NPZ=True)
         self.assertNotEqual(Path(self.ns['zip_path']), zip_path)
         self.assertTrue(zip_path.is_file())
         self.assertNotEqual(Path(repeated[0]['output_dir']).parent, directories[0].parent)
         self.assertTrue((directories[0] / 'track_0001/motion.json').is_file())
 
-    def test_npz_can_be_disabled_in_both_modes(self):
+    def test_npz_is_disabled_by_default_in_both_modes(self):
         for multi_person in (False, True):
             with self.subTest(multi_person=multi_person):
                 self.ns['MULTI_PERSON'] = multi_person
-                result = self.run_cell(self.video, SAVE_NPZ=False)[0]
+                result = self.run_cell(self.video)[0]
                 directory = Path(result['output_dir'])
                 self.assertTrue(result['json_files'])
+                self.assertIs(self.ns['SAVE_NPZ'], False)
                 self.assertFalse(list(directory.rglob('*.npz')))
+                self.assertFalse(list(directory.rglob('raw_npz')))
+                with ZipFile(self.ns['zip_path']) as archive:
+                    self.assertFalse(any(name.endswith('.npz') or '/raw_npz/' in name for name in archive.namelist()))
+
+    def test_tracking_thresholds_are_configurable(self):
+        result = self.run_cell(self.video, TRACK_IOU_THRESHOLD=.4, DUPLICATE_IOU_THRESHOLD=.85)[0]
+        manifest = json.loads((Path(result['output_dir']) / 'manifest.json').read_text())
+        self.assertEqual(manifest['tracking']['iou_threshold'], .4)
+        self.assertEqual(manifest['tracking']['duplicate_iou_threshold'], .85)
 
     def test_batch_failure_keeps_completed_results_and_stops(self):
         class FailingPose(FakePose):
