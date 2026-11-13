@@ -69,6 +69,8 @@ pose-blender --blender "/path/to/blender" \
 
 使用 Notebook 时，可在工程根目录执行 `jupyter notebook extractor/video_to_pose.ipynb`，也可单独上传该文件到 Notebook 平台。默认多人模式、GPU；最后一格的 `VIDEOS` 支持单个路径或列表，`MAX_FRAMES=None`、`STRIDE=1`、起点0和无终点默认处理完整视频。试跑时改为 `MAX_FRAMES=30`。同一 kernel 中换视频只需运行最后一格，每次自动创建新的输出目录；整批完成后自动生成 ZIP 并显示下载链接。详见 [Notebook 批量处理说明](extractor/README.md#只运行最后一格单个视频--视频列表)。
 
+最后一格还可重新设置 `MAX_PEOPLE` / `DETECTOR_THRESHOLD`，不会重载模型；`VIDEOS` 的每项可分别指定 `max_people`。固定机位多人可设置 `MULTI_BBOXES=[[x1,y1,x2,y2], ...]`，或逐视频指定 `bboxes`，跳过 Faster R-CNN，按框顺序固定人物ID。检测器只在首次自动检测时加载，手动模式不需要检测器权重；详见 [人数上限与手动框说明](extractor/README.md#不同视频分别设置人数上限和多人固定框)。
+
 ## 两工程之间的约定
 
 交接文件为 schema 1.0 JSON：原视频 fps、源帧号、真实 PTS 相对时间、70×3 有限关键点（米）、缺失状态及坐标元信息。不是 127 个 MHR 骨架关节，也不是 Blender 骨骼旋转。
@@ -149,4 +151,4 @@ track-ids应按自己的manifest选择；省略时导入全部有效track，不�
 
 单独交付的 `two_people_overview.blend` 与第1/7帧PNG是演示与验收材料：来源是静态截图拼接的双区域幻灯片，仅0和0.5秒两个推理采样，并非真实连续双人动作视频。角色倒置或悬空保留推理结果，未人为纠正。PNG使用Workbench检查几何和布局，不是照片级灯光材质验收。完整独立结果见 `INDEPENDENT_REVIEW.md`。这些演示文件不嵌入源码ZIP。
 
-当前测试：提取器84项、Blender driver13项。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。
+当前测试：提取器96项、Blender driver13项。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import av
@@ -36,6 +36,16 @@ class FakePose:
 class FakeDetector:
     metadata = {'model': 'test detector'}
     device = 'test'
+
+    def __init__(self):
+        self.max_people=20
+        self.threshold=.7
+        self.metadata=dict(model='test detector',max_people=20,score_threshold=.7)
+
+    def configure(self,*,max_people=None,score_threshold=None):
+        self.max_people=multi_person.validate_person_limit(max_people)
+        self.threshold=score_threshold
+        self.metadata=dict(self.metadata,max_people=self.max_people,score_threshold=score_threshold)
 
     def detect(self, image):
         return [dict(bbox=[4, 8, 28, 48], score=.95)]
@@ -67,7 +77,7 @@ class NotebookBatchTests(unittest.TestCase):
                 out.mux(packet)
         return path
 
-    def run_cell(self, videos, **settings):
+    def run_cell(self, videos, detector_factory=None, **settings):
         # Replace only the user-editable assignments, then execute the actual cell.
         overrides = dict(VIDEOS=videos, OUTPUT_ROOT=self.root / 'outputs', **settings)
         tree = ast.parse(CELLS['extract-video'])
@@ -86,7 +96,7 @@ class NotebookBatchTests(unittest.TestCase):
                 patch.dict(sys.modules, {'IPython.display': types.SimpleNamespace(
                     FileLink=lambda filename: filename, display=lambda value: None)}), \
                 patch.object(extract_video, 'load_estimator', side_effect=AssertionError('must reuse model')), \
-                patch.object(multi_person, 'TorchvisionPersonDetector', side_effect=AssertionError('must reuse detector')):
+                patch.object(multi_person, 'TorchvisionPersonDetector', side_effect=detector_factory or AssertionError('must reuse detector')):
             exec(compile(tree, 'notebook:extract-video', 'exec'), self.ns)
         return self.ns['BATCH_RESULTS']
 
@@ -95,7 +105,7 @@ class NotebookBatchTests(unittest.TestCase):
         tree = ast.parse(CELLS['setup-config'])
         assignments = {target.id for node in ast.walk(tree) if isinstance(node, ast.Assign)
                        for target in node.targets if isinstance(target, ast.Name)}
-        for name in ('VIDEO', 'VIDEOS', 'OUTPUT_DIR', 'OUTPUT_JSON', 'MAX_FRAMES', 'STRIDE'):
+        for name in ('VIDEO', 'VIDEOS', 'OUTPUT_DIR', 'OUTPUT_JSON', 'MAX_FRAMES', 'STRIDE','MAX_PEOPLE','DETECTOR_THRESHOLD'):
             self.assertNotIn(name, assignments)
 
     def test_single_path_and_repeat_reuse_models_without_overwriting(self):
@@ -202,28 +212,92 @@ class NotebookBatchTests(unittest.TestCase):
         self.assertIsNone(self.ns['MAX_FRAMES'])
         self.assertEqual(len(data['frames']), 35)
 
-    def test_model_loading_does_not_require_video_or_output_selection(self):
+    def test_model_loading_needs_no_detector_weights_or_video_selection(self):
         self.ns.update(SAM_REPO=self.root / 'sam', DINOV3_REPO=self.root / 'dino',
                        CHECKPOINT_DIR=self.root / 'checkpoints', DEVICE='cpu', KNOWN_HASHES={},
                        CHECKPOINT=self.root / 'model.ckpt', MHR_MODEL=self.root / 'mhr.pt',
                        DETECTOR_WEIGHTS=self.root / 'detector.pth', DETECTOR_THRESHOLD=.7, MAX_PEOPLE=20)
-        self.ns['DETECTOR_WEIGHTS'].touch()
-        pose, detector = self.ns['estimator'], self.ns['detector']
+        pose = self.ns['estimator']
         for sam_device in ('cuda', 'cpu'):
             with self.subTest(sam_device=sam_device):
                 self.ns['DEVICE'] = sam_device
                 with redirect_stdout(io.StringIO()), patch.dict(sys.modules, {'torch': self.ns['torch']}), \
                         patch('runtime_checks.check_runtime', return_value={}) as check, \
                         patch.object(extract_video, 'load_estimator', return_value=(pose, {})) as load, \
-                        patch.object(multi_person, 'TorchvisionPersonDetector', return_value=detector) as create:
+                        patch.object(multi_person, 'TorchvisionPersonDetector') as create:
                     exec(compile(CELLS['model-load'], 'notebook:model-load', 'exec'), self.ns)
                 check.assert_called_once()
                 load.assert_called_once()
                 self.assertEqual(load.call_args.args[3], sam_device)
-                self.assertEqual(create.call_args.kwargs['device'], sam_device)
-                self.assertNotIn('allow_cpu_fallback', create.call_args.kwargs)
+                create.assert_not_called()
                 self.assertIs(self.ns['estimator'], pose)
-                self.assertIs(self.ns['detector'], detector)
+                self.assertIsNone(self.ns['detector'])
+
+    def test_limits_can_change_between_runs_and_per_video(self):
+        class ManyPeople(FakeDetector):
+            def detect(self,image):
+                return [dict(bbox=[x,8,x+8,48],score=.95) for x in (4,24,44)][:self.max_people]
+        detector=self.ns['detector']=ManyPeople()
+        first=self.run_cell(self.video,MAX_PEOPLE=1)[0]
+        second=self.run_cell(self.video,MAX_PEOPLE=3)[0]
+        self.assertIs(self.ns['detector'],detector)
+        for result,count in ((first,1),(second,3)):
+            manifest=json.loads((Path(result['output_dir'])/'manifest.json').read_text())
+            self.assertEqual(len(manifest['tracks']),count)
+            self.assertEqual(manifest['detector']['max_people'],count)
+        jobs=[dict(video=self.video,max_people=1),dict(video=self.other,max_people=3),
+              dict(video=self.video,max_people=1,bboxes=[[24,8,60,55],[4,8,40,55]])]
+        results=self.run_cell(jobs,MAX_PEOPLE=2)
+        counts=[len(json.loads((Path(r['output_dir'])/'manifest.json').read_text())['tracks']) for r in results]
+        self.assertEqual(counts,[1,3,2])
+
+    def test_manual_only_works_without_detector_or_weights(self):
+        self.ns.pop('detector')
+        boxes=[[24,8,60,55],[4,8,40,55]]
+        result=self.run_cell(self.video,MULTI_BBOXES=boxes,MAX_PEOPLE=1)[0]
+        manifest=json.loads((Path(result['output_dir'])/'manifest.json').read_text())
+        self.assertEqual(len(manifest['tracks']),2)
+        self.assertFalse(manifest['detector']['enabled'])
+        self.assertEqual(manifest['detector']['bboxes'],boxes)
+        self.assertNotIn('detector',self.ns)
+
+    def test_manual_mode_ignores_an_unused_detector_on_a_different_device(self):
+        self.ns['detector'].device='cpu'
+        self.ns['runtime_metadata']['device']='cuda'
+        result=self.run_cell(self.video,MULTI_BBOXES=[[4,8,28,48]])[0]
+        self.assertEqual(len(result['json_files']),1)
+
+    def test_automatic_without_weights_fails_before_output(self):
+        self.ns.pop('detector')
+        self.ns['DETECTOR_WEIGHTS']=self.root/'missing.pth'
+        with self.assertRaises(FileNotFoundError):self.run_cell(self.video)
+        self.assertFalse((self.root/'outputs').exists())
+        self.assertEqual(self.ns['estimator'].calls,0)
+
+    def test_manual_override_can_switch_to_automatic_and_back_in_one_batch(self):
+        boxes=[[4,8,28,48],[32,8,60,48]]
+        results=self.run_cell([self.video,dict(video=self.other,bboxes=None)],MULTI_BBOXES=boxes)
+        modes=[json.loads((Path(r['output_dir'])/'manifest.json').read_text())['tracking']['method'] for r in results]
+        self.assertEqual(modes,['manual_fixed_bbox_slots','greedy_observed_then_predicted_iou'])
+
+    def test_detector_is_loaded_lazily_once_for_automatic_jobs(self):
+        self.ns.pop('detector')
+        weights=self.root/'detector.pth';weights.touch();self.ns['DETECTOR_WEIGHTS']=weights
+        factory=Mock(return_value=FakeDetector())
+        self.run_cell([dict(video=self.video,bboxes=[[4,8,28,48]]),self.other],detector_factory=factory,MAX_PEOPLE=3)
+        self.run_cell(self.video,detector_factory=factory,MAX_PEOPLE=1)
+        factory.assert_called_once()
+        self.assertEqual(factory.call_args.kwargs['max_people'],3)
+        self.assertEqual(self.ns['detector'].max_people,1)
+
+    def test_invalid_batch_manual_box_or_limit_fails_before_any_inference(self):
+        invalid=[dict(video=self.other,max_people=0),dict(video=self.other,bboxes=[]),
+                 dict(video=self.other,bboxes=[[0,0,65,40]]),dict(video=self.other,max_peple=2)]
+        for bad in invalid:
+            with self.subTest(bad=bad),self.assertRaises(ValueError):
+                self.run_cell([self.video,bad])
+            self.assertFalse((self.root/'outputs').exists())
+            self.assertEqual(self.ns['estimator'].calls,0)
 
     def test_cached_cpu_detector_with_gpu_sam_is_rejected_before_output_creation(self):
         self.ns['runtime_metadata']['device'] = 'cuda'

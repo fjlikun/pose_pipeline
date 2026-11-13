@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import math
+from numbers import Integral
 import os
 from time import perf_counter
 import numpy as np
@@ -93,6 +94,26 @@ def _probe_detector_nms(device):
         ) from exc
 
 
+def validate_person_limit(value):
+    if isinstance(value,bool) or not isinstance(value,Integral) or value<1:
+        raise ValueError('max_people must be a positive integer')
+    return int(value)
+
+
+def validate_manual_bboxes(boxes,width,height):
+    """Validate fixed source-pixel xyxy boxes; preserve user order and overlaps."""
+    try:
+        array=np.asarray(boxes,dtype=float)
+    except (TypeError,ValueError) as exc:
+        raise ValueError('Manual boxes must be a non-empty list of [x1,y1,x2,y2]') from exc
+    if array.ndim!=2 or array.shape[1]!=4 or len(array)==0 or not np.isfinite(array).all():
+        raise ValueError('Manual boxes must be a non-empty finite Nx4 list')
+    if not ((array[:,0]>=0)&(array[:,1]>=0)&(array[:,2]<=width)&(array[:,3]<=height)&
+            (array[:,2]>array[:,0])&(array[:,3]>array[:,1])).all():
+        raise ValueError(f'Manual boxes must satisfy 0 <= x1 < x2 <= {width}, 0 <= y1 < y2 <= {height}')
+    return array.tolist()
+
+
 class TorchvisionPersonDetector:
     """Uses a local official Faster R-CNN v2 checkpoint. Constructor never downloads."""
     def __init__(self,weights_path,device='cuda',score_threshold=.7,max_people=20):
@@ -100,7 +121,8 @@ class TorchvisionPersonDetector:
         from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
         if device not in ('cpu','cuda'): raise ValueError('Choose cpu or cuda')
         if device=='cuda' and not torch.cuda.is_available(): raise RuntimeError('GPU unavailable; check your PyTorch CUDA/ROCm build and driver')
-        if not 0<score_threshold<=1 or max_people<1: raise ValueError('Invalid detector parameters')
+        max_people=validate_person_limit(max_people)
+        if not 0<score_threshold<=1: raise ValueError('Invalid detector parameters')
         path=Path(weights_path)
         if not path.is_file(): raise FileNotFoundError('Run the explicit detector-download cell first')
         _probe_detector_nms(device)
@@ -113,6 +135,14 @@ class TorchvisionPersonDetector:
         self.metadata=dict(torchvision_version=torchvision.__version__,weights_sha256=sha256(path),model='torchvision/fasterrcnn_resnet50_fpn_v2/COCO_V1',
                            score_threshold=score_threshold,max_people=max_people,device=device,weights_file=path.name,
                            torch_version=torch.__version__,rocm_version=getattr(torch.version,'hip',None))
+
+    def configure(self,*,max_people=None,score_threshold=None):
+        """Update postprocessing only; retain model weights and previous metadata snapshots."""
+        limit=validate_person_limit(self.max_people if max_people is None else max_people)
+        threshold=self.threshold if score_threshold is None else float(score_threshold)
+        if not 0<threshold<=1: raise ValueError('score_threshold must be in (0, 1]')
+        self.max_people=limit;self.threshold=threshold
+        self.metadata=dict(self.metadata,max_people=limit,score_threshold=threshold)
 
     def detect(self,rgb):
         torch=self.torch
@@ -155,11 +185,11 @@ def suppress_duplicate_detections(detections,iou_threshold=.7):
     return kept
 
 
-def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None,
+def extract_multi(video,output_dir,estimator,detector=None,*,stride=1,max_frames=None,
                   start_seconds=0.0,end_seconds=None,iou_threshold=.25,max_missing_seconds=1.0,
-                  duplicate_iou_threshold=.7,
+                  duplicate_iou_threshold=.7,manual_bboxes=None,
                   inference_type='body',save_npz=False,npz_compressed=True,continue_on_error=False,metadata=None):
-    """Decode once; detector/tracker run on sampled frames; output one JSON 1.0 per track."""
+    """Decode once; use detector tracks or stable manual box slots; export each person."""
     import av
     src=Path(video).resolve();root=Path(output_dir).resolve()
     if not src.is_file(): raise FileNotFoundError(src)
@@ -167,15 +197,28 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
     if stride<1 or (max_frames is not None and max_frames<1): raise ValueError('Invalid stride/max_frames')
     if not math.isfinite(start_seconds) or start_seconds<0 or (end_seconds is not None and (not math.isfinite(end_seconds) or end_seconds<=start_seconds)):
         raise ValueError('Invalid time interval')
-    tracker=IoUTracker(iou_threshold,max_missing_seconds)
-    suppress_duplicate_detections([],duplicate_iou_threshold)
-    synchronize=model_synchronizer(estimator,detector)
+    manual=manual_bboxes is not None
+    if manual:
+        with av.open(str(src)) as probe:
+            if not probe.streams.video: raise ValueError('No video stream')
+            stream=probe.streams.video[0]
+            manual_bboxes=validate_manual_bboxes(manual_bboxes,stream.codec_context.width,stream.codec_context.height)
+        detector_info=dict(model='manual_fixed_bboxes',enabled=False,bboxes=manual_bboxes,score_available=False)
+        tracking=dict(method='manual_fixed_bbox_slots',id_policy='input_order_1_based',appearance_reidentification=False)
+        tracker=None
+    else:
+        if detector is None: raise ValueError('Automatic mode requires a detector; provide manual_bboxes for fixed boxes')
+        tracker=IoUTracker(iou_threshold,max_missing_seconds)
+        suppress_duplicate_detections([],duplicate_iou_threshold)
+        detector_info=getattr(detector,'metadata',{'model':'custom detector'})
+        tracking=dict(method='greedy_observed_then_predicted_iou',iou_threshold=iou_threshold,
+                      duplicate_iou_threshold=duplicate_iou_threshold,max_missing_seconds=max_missing_seconds,
+                      appearance_reidentification=False)
+    synchronize=model_synchronizer(estimator,None if manual else detector)
     root.mkdir(parents=True)
     manifest=dict(multi_export_version='1.0',complete=False,tracks=[],sample_index='samples.jsonl',
                   timings_file='timings.jsonl',
-                  source_video=src.name,detector=getattr(detector,'metadata',{'model':'custom detector'}),tracking=dict(method='greedy_observed_then_predicted_iou',iou_threshold=iou_threshold,
-                  duplicate_iou_threshold=duplicate_iou_threshold,
-                  max_missing_seconds=max_missing_seconds,appearance_reidentification=False),metadata=metadata or {})
+                  source_video=src.name,detector=detector_info,tracking=tracking,metadata=metadata or {})
     atomic_json(root/'manifest.json',manifest)
     records={};archives={};sample_count=0;first_pts=None;previous=None;camera_frames=[]
     with av.open(str(src)) as container:
@@ -183,8 +226,8 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
         stream=container.streams.video[0];rate=stream.average_rate or stream.guessed_rate
         if rate is None or not math.isfinite(float(rate)) or float(rate)<=0: raise ValueError('Unknown video FPS')
         fps=float(rate);width=stream.codec_context.width;height=stream.codec_context.height
-        common=dict(detector=getattr(detector,'metadata',{'model':'custom detector'}),source_video=src.name,source_fps_fraction=str(rate),stride=stride,start_seconds=start_seconds,
-                    end_seconds=end_seconds,inference_type=inference_type,person_selection='tracked detection bbox',
+        common=dict(detector=detector_info,source_video=src.name,source_fps_fraction=str(rate),stride=stride,start_seconds=start_seconds,
+                    end_seconds=end_seconds,inference_type=inference_type,person_selection='manual fixed bbox slots' if manual else 'tracked detection bbox',
                     temporal_smoothing=False,tracking=manifest['tracking'],**(metadata or {}))
         decode_started=perf_counter()
         for frame_index,frame in enumerate(container.decode(stream)):
@@ -203,13 +246,22 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
             timing.stages['decode']=decoded_at-decode_started
             with timing.measure('rgb_conversion'):
                 rgb=frame.to_ndarray(format='rgb24')
-            # Detector failure is fatal; never silently pretend it means no people.
-            with timing.measure('detection'):
-                raw_detections=clean_detections(detector.detect(rgb),width,height)
-            with timing.measure('bbox_dedup'):
-                detections=suppress_duplicate_detections(raw_detections,duplicate_iou_threshold)
-            with timing.measure('tracking'):
-                matches,active,expired=tracker.update(detections,t)
+            if manual:
+                # Explicit slots must not be reordered, suppressed or reassigned after a pose miss.
+                raw_detections=detections=[dict(bbox=box,score=None,association='manual_fixed_box',association_iou=None)
+                                            for box in manual_bboxes]
+                with timing.measure('tracking'):
+                    matches={i+1:d for i,d in enumerate(detections)}
+                    active={identity:dict(bbox=np.asarray(d['bbox']),last_seen=t) for identity,d in matches.items()}
+                    expired={}
+            else:
+                # Detector failure is fatal; never silently pretend it means no people.
+                with timing.measure('detection'):
+                    raw_detections=clean_detections(detector.detect(rgb),width,height)
+                with timing.measure('bbox_dedup'):
+                    detections=suppress_duplicate_detections(raw_detections,duplicate_iou_threshold)
+                with timing.measure('tracking'):
+                    matches,active,expired=tracker.update(detections,t)
             states=dict(expired)  # Integer IDs preserved; expiration recorded once.
             states.update(active)
             sample_entries=[];sample_predictions={}
@@ -224,7 +276,7 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                                      source_first_pts_seconds=first_pts,**common),npz_compressed)
                 record=records[track_id]
                 entry=dict(frame_index=frame_index,time_seconds=t,status='missing',pred_keypoints_3d=None,
-                           bbox=state['bbox'].tolist(),track_id=track_id,bbox_source='last_observed')
+                           bbox=state['bbox'].tolist(),track_id=track_id,bbox_source='manual' if manual else 'last_observed')
                 prediction=None
                 if track_id in expired:
                     entry['reason']='track_expired';record['expired_at']=t
@@ -233,7 +285,7 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                 else:
                     record['last_detection']=t
                     observed=matches[track_id]
-                    entry.update(bbox=observed['bbox'],bbox_source='detected',detection_score=observed['score'],
+                    entry.update(bbox=observed['bbox'],bbox_source='manual' if manual else 'detected',detection_score=observed['score'],
                                  association=observed['association'],association_iou=observed['association_iou'])
                     sam_before=timing.stages['sam']
                     try:
@@ -262,15 +314,17 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
                     for entry in sample_entries:
                         if entry['track_id'] in archives: archives[entry['track_id']].append(entry,sample_predictions[entry['track_id']])
             sample=dict(frame_index=frame_index,time_seconds=t,detection_count=len(detections),
+                        bbox_source='manual' if manual else 'detected',
                         raw_detection_count=len(raw_detections),duplicate_detection_count=len(raw_detections)-len(detections),
                         observed_track_ids=sorted(matches),active_track_ids=sorted(active),expired_track_ids=sorted(expired))
             with timing.measure('sample_index_write'):
                 with (root/'samples.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(sample,allow_nan=False)+'\n')
             timing_record=timing.record(frame_index,t,len(detections))
+            timing_record['bbox_source']='manual' if manual else 'detected'
             timing_record['raw_archive_enabled']=save_npz
             with (root/'timings.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(timing_record,allow_nan=False)+'\n')
             sample_count+=1
-            print(f'frame={frame_index} time={t:.6f}s detected={len(detections)} tracks={sorted(matches)} '
+            print(f'frame={frame_index} time={t:.6f}s {"manual_boxes" if manual else "detected"}={len(detections)} tracks={sorted(matches)} '
                   f'detect={timing.stages["detection"]:.4f}s sam={timing.stages["sam"]:.4f}s total={timing_record["frame_total_seconds"]:.4f}s',flush=True)
             if max_frames is not None and sample_count>=max_frames: break
             decode_started=perf_counter()
@@ -311,8 +365,10 @@ def extract_multi(video,output_dir,estimator,detector,*,stride=1,max_frames=None
 def main():
     import argparse
     p=argparse.ArgumentParser(description=__doc__)
-    for name in ('video','output-dir','repo','checkpoint','mhr','detector-weights'):
+    for name in ('video','output-dir','repo','checkpoint','mhr'):
         p.add_argument('--'+name,required=True)
+    p.add_argument('--detector-weights',help='Required in automatic mode only')
+    p.add_argument('--bbox',type=float,nargs=4,action='append',help='Repeat for multiple fixed source-pixel boxes; bypass detector')
     p.add_argument('--device',choices=['cuda','cpu'],default='cuda',
                    help='Shared SAM/person detector device; AMD ROCm also uses cuda')
     p.add_argument('--stride',type=int,default=1)
@@ -331,17 +387,19 @@ def main():
     p.set_defaults(save_npz=False)
     p.add_argument('--continue-on-error',action='store_true')
     args=p.parse_args()
+    if args.bbox is None and not args.detector_weights: p.error('Automatic mode requires --detector-weights; manual mode uses repeated --bbox')
     if Path(args.output_dir).exists(): raise FileExistsError('Choose a new output directory')
     from extract_video import load_estimator
-    detector=TorchvisionPersonDetector(args.detector_weights,
+    detector=None if args.bbox is not None else TorchvisionPersonDetector(args.detector_weights,
         device=args.device,score_threshold=args.detector_threshold,max_people=args.max_people)
     estimator,metadata=load_estimator(args.repo,args.checkpoint,args.mhr,args.device)
-    print('SAM device:',args.device,'detector:',detector.metadata)
+    print('SAM device:',args.device,'detector:',detector.metadata if detector is not None else 'manual fixed boxes')
     import torch
     with torch.inference_mode():
         manifest=extract_multi(args.video,args.output_dir,estimator,detector,stride=args.stride,max_frames=args.max_frames,
             start_seconds=args.start_seconds,end_seconds=args.end_seconds,iou_threshold=args.iou_threshold,
             max_missing_seconds=args.max_missing_seconds,duplicate_iou_threshold=args.duplicate_iou_threshold,save_npz=args.save_npz,
+            manual_bboxes=args.bbox,
             continue_on_error=args.continue_on_error,metadata=metadata)
     print('Completed:',manifest['status'],'tracks:',len(manifest['tracks']))
 

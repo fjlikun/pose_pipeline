@@ -132,19 +132,21 @@ class MultiTests(unittest.TestCase):
                 points=np.zeros((70,3),dtype=np.float32)
                 return [dict(pred_keypoints_3d=points,pred_cam_t=np.array([1,2,5]),
                              focal_length=100.,pred_keypoints_2d=np.tile([52.,72.],(70,1)))]
-        out=self.root/'json_only'
-        manifest=extract_multi(self.video,out,CameraPose(),SequenceDetector([[detection(4)]]),max_frames=1)
-        document=json.loads((out/'track_0001/motion.json').read_text())
-        validate_document(document)
-        self.assertEqual(document['frames'][0]['scene_position']['translation_camera'],[1,2,5])
-        self.assertEqual(document['frames'][0]['association'],'new_track')
-        self.assertEqual(json.loads((out/'camera_frames.json').read_text())[0]['valid_track_ids'],[1])
-        self.assertIsNone(manifest['tracks'][0]['npz_directory'])
-        self.assertFalse((out/'track_0001/raw_npz').exists())
         sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'blender_driver'))
         from pose_blender.shared_cli import load_tracks
-        _,tracks=load_tracks(out/'manifest.json')
-        self.assertEqual(len(tracks),1)
+        for manual in (False,True):
+            out=self.root/f'json_only_{manual}'
+            manifest=extract_multi(self.video,out,CameraPose(),SequenceDetector([[detection(4)]]),max_frames=1,
+                                   manual_bboxes=[[4,8,28,48]] if manual else None)
+            document=json.loads((out/'track_0001/motion.json').read_text())
+            validate_document(document)
+            self.assertEqual(document['frames'][0]['scene_position']['translation_camera'],[1,2,5])
+            self.assertEqual(document['frames'][0]['association'],'manual_fixed_box' if manual else 'new_track')
+            self.assertEqual(json.loads((out/'camera_frames.json').read_text())[0]['valid_track_ids'],[1])
+            self.assertIsNone(manifest['tracks'][0]['npz_directory'])
+            self.assertFalse((out/'track_0001/raw_npz').exists())
+            _,tracks=load_tracks(out/'manifest.json')
+            self.assertEqual(len(tracks),1)
     def test_duplicate_threshold_is_configurable(self):
         from multi_person import suppress_duplicate_detections
         boxes=[detection(4),dict(detection(5),score=.8),detection(40)]
@@ -175,5 +177,43 @@ class MultiTests(unittest.TestCase):
             self.assertTrue(all(value>=0 and np.isfinite(value) for value in row['stages_seconds'].values()))
             self.assertGreaterEqual(row['frame_total_seconds'],sum(row['stages_seconds'].values()))
             self.assertAlmostEqual(sum(call['seconds'] for call in row['sam_calls']),row['stages_seconds']['sam'])
+    def test_manual_boxes_preserve_order_and_overlaps_without_detector(self):
+        class MustNotDetect:
+            device='cuda'  # Even device synchronization must not use this unused detector.
+            def detect(self,*args):raise AssertionError('manual mode must bypass detection')
+        boxes=[[20,8,55,55],[10,8,50,55]]
+        out=self.root/'manual'
+        manifest=extract_multi(self.video,out,FakePose(),MustNotDetect(),manual_bboxes=boxes,max_frames=3,save_npz=True)
+        self.assertEqual([t['track_id'] for t in manifest['tracks']],[1,2])
+        self.assertEqual(manifest['tracking']['method'],'manual_fixed_bbox_slots')
+        self.assertFalse(manifest['detector']['enabled'])
+        for identity,box in enumerate(boxes,1):
+            doc=json.loads((out/f'track_{identity:04d}/motion.json').read_text())
+            self.assertTrue(all(f['bbox']==box and f['bbox_source']=='manual' and
+                                f['detection_score'] is None and f['association']=='manual_fixed_box' for f in doc['frames']))
+            rows=[json.loads(line) for line in (out/f'track_{identity:04d}/raw_npz/frames.jsonl').read_text().splitlines()]
+            self.assertEqual(rows[0]['bbox_source'],'manual')
+        times=[json.loads(line) for line in (out/'timings.jsonl').read_text().splitlines()]
+        self.assertTrue(all(r['stages_seconds']['detection']==0 and r['stages_seconds']['bbox_dedup']==0 for r in times))
+    def test_manual_pose_miss_does_not_reassign_box_ids(self):
+        class MissingPose(FakePose):
+            calls=0
+            def process_one_image(self,*args,**kwargs):
+                self.calls+=1
+                return [] if self.calls==3 else super().process_one_image(*args,**kwargs)
+        out=self.root/'manual_missing'
+        manifest=extract_multi(self.video,out,MissingPose(),manual_bboxes=[[40,8,60,55],[4,8,20,55]],max_frames=3,max_missing_seconds=0)
+        self.assertEqual(len(manifest['tracks']),2)
+        doc=json.loads((out/'track_0001/motion.json').read_text())
+        self.assertEqual([f['status'] for f in doc['frames']],['ok','missing','ok'])
+        self.assertEqual([f['track_id'] for f in doc['frames']],[1,1,1])
+        self.assertEqual(doc['frames'][1]['reason'],'pose_missing')
+    def test_invalid_manual_boxes_rejected_before_output(self):
+        for index,boxes in enumerate(([],[0,0,20,20],[[0,0,65,20]],[[0,0,20,float('nan')]],
+                                     [[20,0,10,20]],[[-1,0,20,20]])):
+            out=self.root/f'invalid_manual_{index}'
+            with self.subTest(boxes=boxes),self.assertRaises(ValueError):
+                extract_multi(self.video,out,FakePose(),manual_bboxes=boxes,max_frames=1)
+            self.assertFalse(out.exists())
 
 if __name__=='__main__':unittest.main()

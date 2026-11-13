@@ -16,6 +16,12 @@ Notebook 的 `SAVE_NPZ=False`，单人/多人 CLI 默认也关闭 NPZ；Python A
 
 逐人的相机相对位移保存在 `motion.json` 的 `scene_position.translation_camera`。`camera_frames.json` 保存共享镜头摘要，不保存每个人的骨骼动作，也不是相机世界运动轨迹。位置和焦距均为单目模型估计。
 
+### 多人手动固定框的标记
+
+手动模式根manifest的 `detector.model='manual_fixed_bboxes'`、`detector.enabled=false`，保存输入框列表；`tracking.method='manual_fixed_bbox_slots'`，track ID按输入框顺序从1开始。每帧 `bbox_source='manual'`、`association='manual_fixed_box'`、`detection_score=null`，不伪造检测置信度。此模式保留相互重叠的用户框；SAM无结果时记为姿态缺失，固定ID不变。
+
+samples/timings中的 `bbox_source` 同样为manual；为兼容原有索引，`detection_count` 在手动模式表示本帧输入框数，不能解释为自动检测确认的人数。首末 `first_detection_seconds`/`last_detection_seconds` 对应框的首末使用时间。手动模式没有检测/NMS，耗时中的 `detection` 和 `bbox_dedup` 为0，`tracking` 为固定槽位分配开销。
+
 ### 逐帧耗时的口径
 
 `timings.jsonl` 的 `stages_seconds` 分别记录 `decode`、`rgb_conversion`、`detection`、`bbox_dedup`、`tracking`、`sam`、`scene_position`、`raw_archive_write` 和 `sample_index_write`，单位均为秒。`sam_calls` 列出逐个 track 的 SAM 耗时；`sam` 为本帧所有调用之和，无人时为0。NPZ关闭时 `raw_archive_write=0`。

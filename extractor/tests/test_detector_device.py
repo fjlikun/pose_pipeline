@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+import numpy as np
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -125,6 +126,44 @@ class DetectorDeviceTests(unittest.TestCase):
                     multi_person.main()
                 self.assertEqual(extract.call_args.kwargs['save_npz'],expected)
                 self.assertEqual(extract.call_args.kwargs['duplicate_iou_threshold'],.85)
+
+    def test_runtime_configuration_changes_results_without_reloading_weights(self):
+        class ArrayOutput:
+            def __init__(self,value):self.value=np.asarray(value)
+            def detach(self):return self
+            def cpu(self):return self
+            def numpy(self):return self.value
+        self.torch.from_numpy=Mock()
+        self.torch.inference_mode=nullcontext
+        self.model.return_value=[dict(boxes=ArrayOutput([[0,0,5,5],[10,0,15,5],[20,0,25,5]]),
+                                      scores=ArrayOutput([.95,.85,.75]),labels=ArrayOutput([1,1,1]))]
+        detector=multi_person.TorchvisionPersonDetector(self.weights,device='cpu')
+        old_metadata=detector.metadata
+        detector.configure(max_people=1,score_threshold=.7)
+        self.assertEqual(len(detector.detect(np.zeros((64,64,3),dtype=np.uint8))),1)
+        detector.configure(max_people=3,score_threshold=.8)
+        self.assertEqual(len(detector.detect(np.zeros((64,64,3),dtype=np.uint8))),2)
+        self.assertEqual(detector.metadata['max_people'],3)
+        self.assertEqual(old_metadata['max_people'],20)
+        self.factory.assert_called_once()
+        self.torch.load.assert_called_once()
+        for value in (0,-1,1.5,True):
+            with self.assertRaises(ValueError):detector.configure(max_people=value)
+        self.assertEqual(detector.max_people,3)
+
+    def test_manual_cli_does_not_construct_detector_or_require_weights(self):
+        argv=self.cli_args('cpu')
+        i=argv.index('--detector-weights');del argv[i:i+2]
+        argv+=['--bbox','0','0','20','30','--bbox','30','0','60','30']
+        with patch.object(sys,'argv',argv), \
+                patch.dict(sys.modules,{'torch':types.SimpleNamespace(inference_mode=nullcontext)}), \
+                patch.object(extract_video,'load_estimator',return_value=(object(),{})), \
+                patch.object(multi_person,'TorchvisionPersonDetector') as create, \
+                patch.object(multi_person,'extract_multi',return_value={'status':'ok','tracks':[]}) as extract, \
+                redirect_stdout(io.StringIO()):
+            multi_person.main()
+        create.assert_not_called()
+        self.assertEqual(extract.call_args.kwargs['manual_bboxes'],[[0,0,20,30],[30,0,60,30]])
 
 
 if __name__ == '__main__':

@@ -11,8 +11,8 @@
 3. 执行项目克隆单元，再执行依赖安装单元。依赖统一来自 **`extractor/requirements.txt`**；命令使用 `sys.executable -m pip`，或 `uv pip --python sys.executable`，安装到当前 kernel。Notebook 会生成 `runtime/torch-constraints.txt`，固定现有 torch/CUDA 相关包版本；其他包仍由 pip/uv 正常解析，可能调整版本，建议使用项目专用环境。
 4. 安装完成后重启 kernel，重新执行配置和项目定位单元，跳过依赖安装单元继续。SAM/DINOv3 单元会执行固定 commit 的 `git clone`、`checkout` 和 `git apply`。`DEVICE="cpu"` 时自动追加 CPU 设备补丁。
 5. 执行 SAM 模型下载单元。默认 ModelScope，可改 `MODEL_SOURCE="huggingface"`。官方 Hugging Face 需事先获准访问，并通过终端 `hf auth login` 或平台 secret 环境变量认证；不要把 token 写进单元格。请先阅读模型与来源的适用许可证。
-6. 多人模式继续执行检测器权重下载单元；单人模式自动跳过。执行本地校验与模型加载单元；该单元不需要先选择视频。
-7. 在最后一个单元格修改 `VIDEOS` 后运行。它支持单个路径或视频列表，默认逐帧处理完整视频；试跑可将 `MAX_FRAMES` 改为 `30`。模型已加载且 kernel 未重启时，之后换视频、重复处理或改采样参数，都只需修改并运行最后一格。
+6. 自动多人模式执行检测器权重下载单元；只用多人手动框时可跳过，单人模式自动跳过。执行本地校验与模型加载单元；该单元只加载 SAM，不需要视频或检测器权重。自动检测器在最后一格首次需要时加载，之后复用。
+7. 在最后一个单元格修改 `VIDEOS`、`MAX_PEOPLE`、`DETECTOR_THRESHOLD` 和 `MULTI_BBOXES` 后运行。支持单个路径或按视频分别设置的列表，默认逐帧处理完整视频；试跑可将 `MAX_FRAMES` 改为 `30`。模型已加载且 kernel 未重启时，换视频、改人数上限或手动框只需修改并运行最后一格。
 
 每个准备单元执行时才会安装/联网，不再通过 RUN_INSTALL/RUN_GIT_SYNC 等开关调用安装封装。所有命令以 `subprocess.run([...], check=True)` 执行，当前命令失败会停止该单元。不要在错误未解决时继续后续单元。
 
@@ -41,7 +41,37 @@ END_SECONDS = None
 
 整批视频成功处理后，最后一格继续用 `shutil.make_archive` 将本次 `run_dir` 压缩成同名 ZIP，保存在 Notebook 当前工作目录，并通过 `FileLink` 显示下载链接。压缩包保留整个批次目录及 JSON、NPZ 等文件的相对位置，解压后可继续交给 Blender driver。每次运行创建不同的批次与 ZIP；自动生成的 `run_*.zip` 已加入 Git 忽略规则。压缩代码中的 `folder` 也可手动改为其他已有结果目录。
 
-视频按列表顺序处理，共用一个已加载的 SAM 和检测器，每个视频的跟踪独立从 ID 1 开始。路径列表在推理前统一检查；若运行途中报错会停止，已完成结果保留，失败视频可能留下未完成归档。再次执行会创建新批次目录。每次运行前可直接改视频列表，无需再执行安装、下载、校验和模型加载；重启 kernel 或修改 `DEVICE`、`MULTI_PERSON`、模型路径、检测器设置后，需要重新执行相关准备和模型加载单元。最后一格还会检查检测器与 SAM 设备一致，避免旧 kernel 继续使用之前缓存的 CPU 检测器。
+视频按列表顺序处理，共用已加载的 SAM，自动模式按需加载并复用检测器；每个视频的轨迹独立从 ID 1 开始。路径和各视频设置在推理前统一检查；若运行途中报错会停止，已完成结果保留，失败视频可能留下未完成归档。再次执行会创建新批次目录。修改 `MAX_PEOPLE`、`DETECTOR_THRESHOLD`、`MULTI_BBOXES` 或逐视频设置只需重跑最后一格，不重新加载权重；更换设备或模型路径后重新执行相关准备和模型加载。自动模式仍检查 SAM/检测器设备一致；手动模式完全不使用缓存检测器。
+
+### 不同视频分别设置人数上限和多人固定框
+
+在最后一格设置默认值；`MAX_PEOPLE` 是**每帧最多保留的检测人数**，不是整段视频累计 track 数的上限：
+
+```python
+MAX_PEOPLE = 2
+DETECTOR_THRESHOLD = 0.7
+MULTI_BBOXES = None  # None 为自动检测
+```
+
+固定机位可直接给每个人指定原图像素框，格式为 `[x1,y1,x2,y2]`：
+
+```python
+MULTI_BBOXES = [[100, 100, 800, 1000], [900, 100, 1600, 1000]]
+```
+
+框列表第1/2项始终对应 track 1/2，跳过 Faster R-CNN、NMS 和 IoU 身份关联。手动框可以重叠，数量由列表长度决定，不受 `MAX_PEOPLE` 截断。SAM 某帧无结果时保留同一 ID 并记录缺失，不新建 ID。手动框越界、退化、为空或含非有限值会在输出前报错。
+
+同一批次也可混合自动/手动视频，并覆盖默认设置：
+
+```python
+VIDEOS = [
+    {"video": "/data/one.mp4", "max_people": 1},
+    {"video": "/data/three.mp4", "max_people": 3},
+    {"video": "/data/fixed.mp4", "bboxes": [[100, 100, 800, 1000], [900, 100, 1600, 1000]]},
+]
+```
+
+省略 `max_people`/`bboxes` 时继承最后一格的默认值；`bboxes=None` 可覆盖全局手动框，切回自动检测。原有字符串/Path/路径列表继续支持。框必须符合每个视频的原始尺寸；手动模式不确认框内是否有人，人物需保持在分配的区域内，不会自动跟随离开该区域的人。
 
 ## 不使用 Notebook：在终端手动准备
 
@@ -324,7 +354,7 @@ Notebook 只使用一个 `DEVICE`，CLI 对应 `--device`，同时决定 SAM 和
 DEVICE = "cuda"
 ```
 
-CLI 在原命令中使用 `--device cuda`。加载单元先检查并加载检测器，再加载 SAM；小输入 NMS 检查在 Faster R-CNN 权重分配/加载前完成。GPU 算子缺失时停止，并提示修复 PyTorch/torchvision 构建；不会把检测器移到 CPU，也不修改全局 torchvision 算子。驱动、显存不足、其他算子或其他运行错误仍会报错。
+CLI 在原命令中使用 `--device cuda`。自动 CLI 先检查检测器再加载 SAM；Notebook 先加载 SAM，在最后一格首次自动检测时加载检测器。小输入 NMS 检查在 Faster R-CNN 权重分配/加载前完成；手动框模式不加载检测器、不检查其 NMS。自动模式GPU算子缺失时停止并提示修复环境，不切CPU，也不修改全局算子。
 
 统一设备配置不会补齐缺失的 GPU 算子。AMD 环境需要与 PyTorch 和 ROCm 运行时匹配的 torchvision GPU 构建；`torch.cuda.is_available()` 为 True 只说明 PyTorch 可访问 GPU。应按目标环境的 `torch.__version__`、`torchvision.__version__` 和 `torch.version.hip` 选择对应构建，修复环境后重启 kernel。导出的 detector metadata 会记录实际 `device`、torch/torchvision 版本及 `rocm_version`，模型加载时也会打印相关信息。只有统一设为 `DEVICE="cpu"` 时，才按前文给 SAM 应用 CPU 补丁。
 
@@ -379,6 +409,15 @@ python multi_person.py --video input.mp4 --output-dir motion_multi \
 ```
 
 单人仍用extract_video.py，或Notebook MULTI_PERSON=False。CPU运行须显式应用cpu_device.patch并选device=cpu；不会改装CPU torch。
+
+多人手动固定框 CLI 无需 `--detector-weights`；重复 `--bbox` 指定多个框：
+
+```sh
+python multi_person.py --video input.mp4 --output-dir fixed_people \
+  --repo /path/to/sam-3d-body --checkpoint /path/to/checkpoints/model.ckpt \
+  --mhr /path/to/checkpoints/assets/mhr_model.pt --device cuda \
+  --bbox 100 100 800 1000 --bbox 900 100 1600 1000
+```
 
 ### Blender边界
 
