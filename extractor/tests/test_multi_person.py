@@ -215,5 +215,80 @@ class MultiTests(unittest.TestCase):
             with self.subTest(boxes=boxes),self.assertRaises(ValueError):
                 extract_multi(self.video,out,FakePose(),manual_bboxes=boxes,max_frames=1)
             self.assertFalse(out.exists())
+    def test_per_box_starts_use_source_timeline_and_keep_original_ids(self):
+        class CountingPose(FakePose):
+            calls=0
+            def process_one_image(self,*args,**kwargs):
+                self.calls+=1
+                return super().process_one_image(*args,**kwargs)
+        specs=[dict(bbox=[40,8,50,48],start_frame=7),dict(bbox=[24,8,34,48],start_seconds=.2),
+               [4,8,14,48],dict(bbox=[52,8,62,48],start_frame=100)]
+        out=self.root/'scheduled';pose=CountingPose()
+        manifest=extract_multi(self.video,out,pose,manual_bboxes=specs,stride=3,start_seconds=.1,max_frames=3,save_npz=True)
+        self.assertEqual(pose.calls,6)
+        self.assertEqual([t['track_id'] for t in manifest['tracks']],[1,2,3])
+        self.assertEqual(manifest['not_started_track_ids'],[4])
+        for identity,indices in ((1,[9]),(2,[6,9]),(3,[3,6,9])):
+            folder=out/f'track_{identity:04d}'
+            doc=json.loads((folder/'motion.json').read_text())
+            self.assertEqual([f['frame_index'] for f in doc['frames']],indices)
+            self.assertEqual(doc['frames'][0]['time_seconds'],float(Fraction(indices[0]*1001,30000)))
+            rows=[json.loads(line) for line in (folder/'raw_npz/frames.jsonl').read_text().splitlines()]
+            self.assertEqual([r['frame_index'] for r in rows],indices)
+        self.assertFalse((out/'track_0004').exists())
+        samples=[json.loads(line) for line in (out/'samples.jsonl').read_text().splitlines()]
+        self.assertEqual([r['observed_track_ids'] for r in samples],[[3],[2,3],[1,2,3]])
+        self.assertEqual([r['pending_track_ids'] for r in samples],[[1,2,4],[1,4],[4]])
+        self.assertEqual(manifest['detector']['bbox_schedule'][0]['start_frame'],7)
+    def test_all_pending_slots_do_not_run_sam_or_create_track_directories(self):
+        class MustNotRun:
+            def process_one_image(self,*args,**kwargs):raise AssertionError('SAM ran before bbox start')
+        out=self.root/'pending'
+        manifest=extract_multi(self.video,out,MustNotRun(),max_frames=3,
+            manual_bboxes=[dict(bbox=[0,0,20,20],start_seconds=2),dict(bbox=[30,0,50,20],start_frame=100)])
+        self.assertTrue(manifest['complete'])
+        self.assertEqual(manifest['tracks'],[])
+        self.assertEqual(manifest['status'],'no_started_boxes')
+        self.assertEqual(manifest['not_started_track_ids'],[1,2])
+        self.assertFalse(list(out.glob('track_*')))
+        times=[json.loads(line) for line in (out/'timings.jsonl').read_text().splitlines()]
+        self.assertTrue(all(row['stages_seconds']['sam']==0 and row['sam_calls']==[] for row in times))
+    def test_start_boundaries_are_inclusive_for_seconds_and_source_frames(self):
+        threshold=float(Fraction(3*1001,30000));out=self.root/'boundary'
+        manifest=extract_multi(self.video,out,FakePose(),max_frames=5,manual_bboxes=[
+            dict(bbox=[0,0,20,20],start_seconds=threshold),dict(bbox=[30,0,50,20],start_frame=3)])
+        self.assertEqual(len(manifest['tracks']),2)
+        for identity in (1,2):
+            doc=json.loads((out/f'track_{identity:04d}/motion.json').read_text())
+            self.assertEqual([frame['frame_index'] for frame in doc['frames']],[3,4])
+    def test_invalid_box_start_specs_fail_before_output(self):
+        bad=[dict(start_frame=-1),dict(start_frame=1.5),dict(start_frame=True),dict(start_seconds=-1),
+             dict(start_seconds=float('nan')),dict(start_seconds=float('inf')),dict(start_seconds=True),
+             dict(start_seconds=0,start_frame=0),dict(start_second=1)]
+        for index,settings in enumerate(bad):
+            out=self.root/f'bad_schedule_{index}'
+            with self.subTest(settings=settings),self.assertRaises(ValueError):
+                extract_multi(self.video,out,FakePose(),manual_bboxes=[dict(bbox=[0,0,20,20],**settings)])
+            self.assertFalse(out.exists())
+    def test_seconds_start_uses_vfr_pts_and_not_nominal_fps_or_selected_start(self):
+        video=self.root/'variable.mkv'
+        with av.open(str(video),'w') as output:
+            stream=output.add_stream('ffv1',rate=30)
+            stream.width=stream.height=64;stream.pix_fmt='yuv420p'
+            stream.time_base=stream.codec_context.time_base=Fraction(1,1000)
+            for pts in (1000,1040,1200,1500):
+                frame=av.VideoFrame.from_ndarray(np.zeros((64,64,3),dtype=np.uint8),format='rgb24')
+                frame.pts=pts;frame.time_base=Fraction(1,1000)
+                for packet in stream.encode(frame):output.mux(packet)
+            for packet in stream.encode():output.mux(packet)
+        out=self.root/'vfr'
+        extract_multi(video,out,FakePose(),start_seconds=.01,manual_bboxes=[
+            dict(bbox=[0,0,20,20],start_seconds=.1),dict(bbox=[30,0,50,20],start_frame=1)])
+        first=json.loads((out/'track_0001/motion.json').read_text())
+        second=json.loads((out/'track_0002/motion.json').read_text())
+        self.assertEqual([f['frame_index'] for f in first['frames']],[2,3])
+        self.assertEqual([f['frame_index'] for f in second['frames']],[1,2,3])
+        self.assertAlmostEqual(first['frames'][0]['time_seconds'],.2)
+        self.assertAlmostEqual(second['frames'][0]['time_seconds'],.04)
 
 if __name__=='__main__':unittest.main()

@@ -280,6 +280,24 @@ class NotebookBatchTests(unittest.TestCase):
         modes=[json.loads((Path(r['output_dir'])/'manifest.json').read_text())['tracking']['method'] for r in results]
         self.assertEqual(modes,['manual_fixed_bbox_slots','greedy_observed_then_predicted_iou'])
 
+    def test_per_box_starts_survive_global_and_per_video_settings(self):
+        specs=[dict(bbox=[24,8,60,55],start_frame=2),dict(bbox=[4,8,20,55],start_seconds=0)]
+        result=self.run_cell(self.video,MULTI_BBOXES=specs)[0]
+        folder=Path(result['output_dir'])
+        first=json.loads((folder/'track_0001/motion.json').read_text())
+        second=json.loads((folder/'track_0002/motion.json').read_text())
+        self.assertEqual([f['frame_index'] for f in first['frames']],[2,3])
+        self.assertEqual([f['frame_index'] for f in second['frames']],[0,1,2,3])
+        overridden=self.run_cell([dict(video=self.video,bboxes=[dict(bbox=[4,8,28,48],start_frame=3)])])[0]
+        doc=json.loads((Path(overridden['output_dir'])/'track_0001/motion.json').read_text())
+        self.assertEqual([f['frame_index'] for f in doc['frames']],[3])
+
+    def test_bad_schedule_in_later_video_rejects_entire_batch_before_output(self):
+        with self.assertRaises(ValueError):
+            self.run_cell([self.video,dict(video=self.other,bboxes=[dict(bbox=[4,8,28,48],start_frame=-1)])])
+        self.assertFalse((self.root/'outputs').exists())
+        self.assertEqual(self.ns['estimator'].calls,0)
+
     def test_detector_is_loaded_lazily_once_for_automatic_jobs(self):
         self.ns.pop('detector')
         weights=self.root/'detector.pth';weights.touch();self.ns['DETECTOR_WEIGHTS']=weights

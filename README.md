@@ -71,6 +71,8 @@ pose-blender --blender "/path/to/blender" \
 
 最后一格还可重新设置 `MAX_PEOPLE` / `DETECTOR_THRESHOLD`，不会重载模型；`VIDEOS` 的每项可分别指定 `max_people`。固定机位多人可设置 `MULTI_BBOXES=[[x1,y1,x2,y2], ...]`，或逐视频指定 `bboxes`，跳过 Faster R-CNN，按框顺序固定人物ID。检测器只在首次自动检测时加载，手动模式不需要检测器权重；详见 [人数上限与手动框说明](extractor/README.md#不同视频分别设置人数上限和多人固定框)。
 
+每个手动框可独立设置开始条件：`{"bbox": [...], "start_seconds": 2.5}` 或 `{"bbox": [...], "start_frame": 150}`，达到起点后才运行SAM。时间和从0开始的源帧号均相对原视频；启动前不产生该框的姿态帧/人物目录，ID仍按原列表顺序固定。
+
 ## 两工程之间的约定
 
 交接文件为 schema 1.0 JSON：原视频 fps、源帧号、真实 PTS 相对时间、70×3 有限关键点（米）、缺失状态及坐标元信息。不是 127 个 MHR 骨架关节，也不是 Blender 骨骼旋转。
@@ -151,4 +153,4 @@ track-ids应按自己的manifest选择；省略时导入全部有效track，不�
 
 单独交付的 `two_people_overview.blend` 与第1/7帧PNG是演示与验收材料：来源是静态截图拼接的双区域幻灯片，仅0和0.5秒两个推理采样，并非真实连续双人动作视频。角色倒置或悬空保留推理结果，未人为纠正。PNG使用Workbench检查几何和布局，不是照片级灯光材质验收。完整独立结果见 `INDEPENDENT_REVIEW.md`。这些演示文件不嵌入源码ZIP。
 
-当前测试：提取器96项、Blender driver13项。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。
+当前测试：提取器103项、Blender driver13项。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。

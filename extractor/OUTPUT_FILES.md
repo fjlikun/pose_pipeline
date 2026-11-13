@@ -20,6 +20,10 @@ Notebook 的 `SAVE_NPZ=False`，单人/多人 CLI 默认也关闭 NPZ；Python A
 
 手动模式根manifest的 `detector.model='manual_fixed_bboxes'`、`detector.enabled=false`，保存输入框列表；`tracking.method='manual_fixed_bbox_slots'`，track ID按输入框顺序从1开始。每帧 `bbox_source='manual'`、`association='manual_fixed_box'`、`detection_score=null`，不伪造检测置信度。此模式保留相互重叠的用户框；SAM无结果时记为姿态缺失，固定ID不变。
 
+各框可设置 `start_seconds` 或 `start_frame`；根manifest的 `detector.bbox_schedule` 保存每项的输入ID、坐标和开始条件。已启动轨迹的summary及motion.json metadata中的 `manual_box` 保存自己的设置。坐标列表字段 `detector.bboxes` 继续保留兼容。
+
+未达到开始条件时不创建该track目录、不输出其姿态行和NPZ。samples.jsonl / timings.jsonl的 `pending_track_ids` 列出该采样帧尚未启用的框ID，已激活的ID不因启动次序改变。结束后根manifest的 `not_started_track_ids` 列出选取范围内从未启用的ID；有采样但所有框都未启用时status为 `no_started_boxes`，tracks为空。全局没有采样时仍为 `no_samples`。
+
 samples/timings中的 `bbox_source` 同样为manual；为兼容原有索引，`detection_count` 在手动模式表示本帧输入框数，不能解释为自动检测确认的人数。首末 `first_detection_seconds`/`last_detection_seconds` 对应框的首末使用时间。手动模式没有检测/NMS，耗时中的 `detection` 和 `bbox_dedup` 为0，`tracking` 为固定槽位分配开销。
 
 ### 逐帧耗时的口径

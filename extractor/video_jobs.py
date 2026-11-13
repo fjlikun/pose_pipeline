@@ -1,7 +1,7 @@
 """Validate per-video notebook settings before creating output directories."""
 import os
 from pathlib import Path
-from multi_person import validate_manual_bboxes, validate_person_limit
+from multi_person import normalize_manual_box_specs, validate_person_limit
 
 
 def prepare_video_jobs(inputs,*,max_people=20,manual_bboxes=None):
@@ -23,6 +23,6 @@ def prepare_video_jobs(inputs,*,max_people=20,manual_bboxes=None):
             with av.open(str(video)) as container:
                 if not container.streams.video: raise ValueError(f'No video stream: {video}')
                 stream=container.streams.video[0]
-                boxes=validate_manual_bboxes(boxes,stream.codec_context.width,stream.codec_context.height)
+                boxes=normalize_manual_box_specs(boxes,stream.codec_context.width,stream.codec_context.height)
         jobs.append(dict(video=video,max_people=limit,bboxes=boxes))
     return jobs

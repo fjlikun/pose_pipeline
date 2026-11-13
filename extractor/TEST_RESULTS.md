@@ -1,5 +1,12 @@
 # 验证结果
 
+## 每个手动框独立开始时间/源帧号（2026-11-13）
+
+- 多人手动框兼容原坐标列表，并支持 `{bbox, start_seconds}` / `{bbox, start_frame}`；每框时间和帧号二选一，省略时0秒启用。Notebook全局MULTI_BBOXES、逐视频bboxes及API均保留开始设置，整批非法配置在输出前拒绝。
+- 每框按原视频PTS或从0开始的源帧号启动，边界包含；全局START_SECONDS和STRIDE不重置起点。尚未启动的框不调用SAM、不创建track目录/NPZ、不写姿态或缺失行，ID仍按原输入顺序固定。根manifest保存bbox_schedule及not_started_track_ids，逐帧samples/timings保存pending_track_ids；全部框未启动时status=no_started_boxes。
+- 提取器 **103项**、Blender driver **13项**，共 **116项**通过；Notebook schema/代码编译及Git空白检查通过。新用例覆盖时间/帧号混用、逆序启动保持ID、包含边界、抽帧和全局非零起点、延后NPZ/JSON输出、从未启用的框以及错误参数预检。
+- 实际创建FFV1/MKV变帧率测试视频，非零源PTS为1.00/1.04/1.20/1.50秒；验证0.1秒条件从源帧2开始，start_frame=1从源帧1开始，输出时间仍为相对原视频的0.20/0.04秒。模型输出为替身，未新增真实GPU/SAM推理；本次不改模型推理算法。
+
 ## Notebook逐视频人数上限与多人手动框（2026-11-13）
 
 - `MAX_PEOPLE`、`DETECTOR_THRESHOLD`移到最后一格，可在同一个缓存检测器上重新配置，不重载权重；逐视频字典可分别指定max_people。元数据按次保留快照，不把前一个视频的设置改成后一个视频的值。

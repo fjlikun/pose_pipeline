@@ -2,7 +2,7 @@
 from pathlib import Path
 import json
 import math
-from numbers import Integral
+from numbers import Integral, Real
 import os
 from time import perf_counter
 import numpy as np
@@ -114,6 +114,36 @@ def validate_manual_bboxes(boxes,width,height):
     return array.tolist()
 
 
+def normalize_manual_box_specs(boxes,width,height):
+    """Accept legacy boxes or scheduled specs; starts reference original video PTS/frame IDs."""
+    if isinstance(boxes,dict):
+        raise ValueError('Manual boxes must be a non-empty list of boxes or bbox specifications')
+    try:
+        items=list(boxes)
+    except TypeError as exc:
+        raise ValueError('Manual boxes must be a non-empty list') from exc
+    if not items: raise ValueError('Manual boxes must be a non-empty list')
+    specs=[]
+    for item in items:
+        spec=item if isinstance(item,dict) else {'bbox':item}
+        if 'bbox' not in spec or set(spec)-{'bbox','start_seconds','start_frame'}:
+            raise ValueError('Each box supports bbox and either start_seconds or start_frame')
+        if 'start_seconds' in spec and 'start_frame' in spec:
+            raise ValueError('Choose either start_seconds or start_frame for each bbox')
+        box=validate_manual_bboxes([spec['bbox']],width,height)[0]
+        if 'start_frame' in spec:
+            start=spec['start_frame']
+            if isinstance(start,bool) or not isinstance(start,Integral) or start<0:
+                raise ValueError('start_frame must be a nonnegative zero-based source frame integer')
+            specs.append(dict(bbox=box,start_frame=int(start)))
+        else:
+            start=spec.get('start_seconds',0)
+            if isinstance(start,bool) or not isinstance(start,Real) or not math.isfinite(start) or start<0:
+                raise ValueError('start_seconds must be a finite nonnegative number')
+            specs.append(dict(bbox=box,start_seconds=float(start)))
+    return specs
+
+
 class TorchvisionPersonDetector:
     """Uses a local official Faster R-CNN v2 checkpoint. Constructor never downloads."""
     def __init__(self,weights_path,device='cuda',score_threshold=.7,max_people=20):
@@ -202,8 +232,10 @@ def extract_multi(video,output_dir,estimator,detector=None,*,stride=1,max_frames
         with av.open(str(src)) as probe:
             if not probe.streams.video: raise ValueError('No video stream')
             stream=probe.streams.video[0]
-            manual_bboxes=validate_manual_bboxes(manual_bboxes,stream.codec_context.width,stream.codec_context.height)
-        detector_info=dict(model='manual_fixed_bboxes',enabled=False,bboxes=manual_bboxes,score_available=False)
+            manual_specs=normalize_manual_box_specs(manual_bboxes,stream.codec_context.width,stream.codec_context.height)
+        manual_bboxes=[spec['bbox'] for spec in manual_specs]
+        detector_info=dict(model='manual_fixed_bboxes',enabled=False,bboxes=manual_bboxes,score_available=False,
+                           bbox_schedule=[dict(track_id=i+1,**spec) for i,spec in enumerate(manual_specs)])
         tracking=dict(method='manual_fixed_bbox_slots',id_policy='input_order_1_based',appearance_reidentification=False)
         tracker=None
     else:
@@ -248,13 +280,20 @@ def extract_multi(video,output_dir,estimator,detector=None,*,stride=1,max_frames
                 rgb=frame.to_ndarray(format='rgb24')
             if manual:
                 # Explicit slots must not be reordered, suppressed or reassigned after a pose miss.
-                raw_detections=detections=[dict(bbox=box,score=None,association='manual_fixed_box',association_iou=None)
-                                            for box in manual_bboxes]
                 with timing.measure('tracking'):
-                    matches={i+1:d for i,d in enumerate(detections)}
+                    matches={};pending_ids=[]
+                    for identity,spec in enumerate(manual_specs,1):
+                        ready=(frame_index>=spec['start_frame'] if 'start_frame' in spec else
+                               t>=spec['start_seconds'] or math.isclose(t,spec['start_seconds'],rel_tol=0,abs_tol=1e-9))
+                        if ready:
+                            matches[identity]=dict(bbox=spec['bbox'],score=None,association='manual_fixed_box',association_iou=None)
+                        else:
+                            pending_ids.append(identity)
+                    raw_detections=detections=list(matches.values())
                     active={identity:dict(bbox=np.asarray(d['bbox']),last_seen=t) for identity,d in matches.items()}
                     expired={}
             else:
+                pending_ids=[]
                 # Detector failure is fatal; never silently pretend it means no people.
                 with timing.measure('detection'):
                     raw_detections=clean_detections(detector.detect(rgb),width,height)
@@ -315,12 +354,14 @@ def extract_multi(video,output_dir,estimator,detector=None,*,stride=1,max_frames
                         if entry['track_id'] in archives: archives[entry['track_id']].append(entry,sample_predictions[entry['track_id']])
             sample=dict(frame_index=frame_index,time_seconds=t,detection_count=len(detections),
                         bbox_source='manual' if manual else 'detected',
+                        pending_track_ids=pending_ids,
                         raw_detection_count=len(raw_detections),duplicate_detection_count=len(raw_detections)-len(detections),
                         observed_track_ids=sorted(matches),active_track_ids=sorted(active),expired_track_ids=sorted(expired))
             with timing.measure('sample_index_write'):
                 with (root/'samples.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(sample,allow_nan=False)+'\n')
             timing_record=timing.record(frame_index,t,len(detections))
             timing_record['bbox_source']='manual' if manual else 'detected'
+            timing_record['pending_track_ids']=pending_ids
             timing_record['raw_archive_enabled']=save_npz
             with (root/'timings.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(timing_record,allow_nan=False)+'\n')
             sample_count+=1
@@ -333,12 +374,14 @@ def extract_multi(video,output_dir,estimator,detector=None,*,stride=1,max_frames
     common['scene_position']=METADATA
     for track_id,record in sorted(records.items()):
         meta=dict(common,track_id=track_id,first_detection_seconds=record['born'],last_detection_seconds=record['last_detection'])
+        if manual: meta['manual_box']=manual_specs[track_id-1]
         successes=sum(f['status']=='ok' for f in record['frames'])
         summary=dict(track_id=track_id,successful_frames=successes,sampled_frames=len(record['frames']),
                      first_detection_seconds=record['born'],last_detection_seconds=record['last_detection'],
                      expired_at_seconds=record['expired_at'],json_file=None,
                      npz_directory=f'track_{track_id:04d}/raw_npz' if save_npz else None,
                      status='ok' if successes else 'no_valid_pose')
+        if manual: summary['manual_box']=manual_specs[track_id-1]
         if successes:
             data=dict(schema_version='1.0',fps=fps,width=width,height=height,coordinates=COORDINATES,metadata=meta,frames=record['frames'])
             validate_document(data)
@@ -351,6 +394,9 @@ def extract_multi(video,output_dir,estimator,detector=None,*,stride=1,max_frames
         manifest['tracks'].append(summary)
     manifest.update(complete=True,sampled_frames=sample_count,fps=fps,width=width,height=height,
                     source_first_pts_seconds=first_pts,status='no_samples' if sample_count==0 else ('ok' if any(r['successful_frames'] for r in manifest['tracks']) else 'no_valid_people'))
+    if manual:
+        manifest['not_started_track_ids']=[identity for identity in range(1,len(manual_specs)+1) if identity not in records]
+        if sample_count and not records: manifest['status']='no_started_boxes'
     if not (root/'samples.jsonl').exists(): (root/'samples.jsonl').touch()
     if not (root/'timings.jsonl').exists(): (root/'timings.jsonl').touch()
     atomic_json(root/'camera_frames.json',camera_frames)
