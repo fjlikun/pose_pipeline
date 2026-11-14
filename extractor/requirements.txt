@@ -55,3 +55,12 @@ ipykernel>=6
 # ModelScope 1.29.2 CLI imports pkg_resources (removed in setuptools 81).
 setuptools<81
 wheel
+
+# Detectron2 runtime/build dependencies. Its fixed source is installed explicitly
+# by the notebook only when that backend is selected, with --no-deps.
+iopath>=0.1.7,<0.1.10
+termcolor>=1.1
+tabulate
+cloudpickle
+packaging
+ninja

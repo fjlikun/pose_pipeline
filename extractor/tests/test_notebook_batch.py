@@ -19,6 +19,7 @@ EXTRACTOR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EXTRACTOR))
 import extract_video
 import multi_person
+import person_detector
 
 NOTEBOOK = json.loads((EXTRACTOR / 'video_to_pose.ipynb').read_text(encoding='utf-8'))
 CELLS = {c['id']: ''.join(c['source']) for c in NOTEBOOK['cells'] if c['cell_type'] == 'code'}
@@ -27,15 +28,17 @@ CELLS = {c['id']: ''.join(c['source']) for c in NOTEBOOK['cells'] if c['cell_typ
 class FakePose:
     def __init__(self):
         self.calls = 0
+        self.bboxes = []
 
     def process_one_image(self, image, **kwargs):
         self.calls += 1
+        self.bboxes.append(kwargs.get('bboxes'))
         return [dict(pred_keypoints_3d=np.ones((70, 3), dtype=np.float32))]
 
 
 class FakeDetector:
     metadata = {'model': 'test detector'}
-    device = 'test'
+    device = 'cpu'
 
     def __init__(self):
         self.max_people=20
@@ -60,7 +63,10 @@ class NotebookBatchTests(unittest.TestCase):
         self.other = self.make_video('two/source.mp4')
         self.ns = dict(Path=Path, PROJECT_DIR=self.root, RUNTIME_DIR=self.root / 'runtime',
                        MULTI_PERSON=True, torch=types.SimpleNamespace(inference_mode=nullcontext),
-                       estimator=FakePose(), detector=FakeDetector(), runtime_metadata={'device': 'test'})
+                       estimator=FakePose(), detector=FakeDetector(), runtime_metadata={'device': 'cpu'},
+                       DETECTOR_BACKEND='auto', DETECTOR_MODEL='vitdet_b', DETECTRON2_REPO=self.root / 'detectron2',
+                       DETECTOR_WEIGHTS=self.root / 'detector.pth')
+        self.ns['detector'].cache_key = person_detector.detector_cache_key(self.ns['DETECTOR_WEIGHTS'], device='cpu')
 
     def make_video(self, name, frame_count=4):
         path = self.root / name
@@ -238,6 +244,7 @@ class NotebookBatchTests(unittest.TestCase):
             def detect(self,image):
                 return [dict(bbox=[x,8,x+8,48],score=.95) for x in (4,24,44)][:self.max_people]
         detector=self.ns['detector']=ManyPeople()
+        detector.cache_key=person_detector.detector_cache_key(self.ns['DETECTOR_WEIGHTS'],device='cpu')
         first=self.run_cell(self.video,MAX_PEOPLE=1)[0]
         second=self.run_cell(self.video,MAX_PEOPLE=3)[0]
         self.assertIs(self.ns['detector'],detector)
@@ -324,6 +331,41 @@ class NotebookBatchTests(unittest.TestCase):
             self.run_cell(self.video)
         self.assertEqual(self.ns['estimator'].calls, 0)
         self.assertFalse((self.root / 'outputs').exists())
+
+    def test_gpu_default_uses_vitdet_once_and_passes_source_boxes_to_sam(self):
+        self.ns['runtime_metadata']['device'] = 'cuda'
+        self.ns['torch'].cuda = types.SimpleNamespace(synchronize=Mock())
+        self.ns['detector'] = None
+        self.ns['DETECTOR_WEIGHTS'].touch()
+
+        def create(weights, **settings):
+            self.assertEqual(settings['model_name'], 'vitdet_b')
+            detector = FakeDetector()
+            detector.device = settings['device']
+            detector.cache_key = person_detector.detector_cache_key(weights, device=settings['device'],
+                backend='detectron2', model_name=settings['model_name'], repo=settings['repo'])
+            detector.metadata = dict(detector.metadata, backend='detectron2', model='detectron2/vitdet_b')
+            return detector
+
+        with patch.object(person_detector, 'Detectron2PersonDetector', side_effect=create) as factory, \
+                patch.dict(sys.modules, {'torch': self.ns['torch']}):
+            first = self.run_cell(self.video)
+            self.run_cell(self.other, MAX_PEOPLE=1, DETECTOR_THRESHOLD=.6)
+        factory.assert_called_once()
+        self.assertEqual(factory.call_args.kwargs['device'], 'cuda')
+        self.assertEqual(self.ns['estimator'].calls, 8)
+        for boxes in self.ns['estimator'].bboxes:
+            np.testing.assert_array_equal(boxes, [[4, 8, 28, 48]])
+        manifest = json.loads((Path(first[0]['output_dir']) / 'manifest.json').read_text())
+        self.assertEqual(manifest['detector']['backend'], 'detectron2')
+
+    def test_changed_detector_backend_or_weights_requires_reload_before_output(self):
+        for settings in ({'DETECTOR_BACKEND': 'detectron2'},
+                         {'DETECTOR_WEIGHTS': self.root / 'other.pth'}):
+            with patch.dict(self.ns, settings), self.assertRaisesRegex(RuntimeError, '清除旧缓存'):
+                self.run_cell(self.video)
+        self.assertFalse((self.root / 'outputs').exists())
+        self.assertEqual(self.ns['estimator'].calls, 0)
 
     def test_missing_model_reports_setup_step_before_output_creation(self):
         del self.ns['estimator']

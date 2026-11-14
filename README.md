@@ -14,7 +14,7 @@ git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/
 
 ## Notebook 与终端安装入口
 
-- **Notebook 环境**：打开或上传 [`extractor/video_to_pose.ipynb`](extractor/video_to_pose.ipynb)，依次执行本项目 `git clone`、当前 kernel 的 pip/uv 依赖安装、固定版本 SAM/DINOv3 克隆与补丁、模型下载和加载。已有项目目录会直接复用；只上传 Notebook 时会克隆本项目。开头配置 `DEVICE` 和 `PACKAGE_MANAGER`；视频路径和提取参数在最后一格，加载模型后只修改并运行最后一格即可处理单个或多个视频。
+- **Notebook 环境**：打开或上传 [`extractor/video_to_pose.ipynb`](extractor/video_to_pose.ipynb)，依次执行本项目 `git clone`、当前 kernel 的 pip/uv 依赖安装、固定版本 Detectron2 安装（选用该后端时）、SAM/DINOv3 克隆与补丁、选定模型下载和加载。已有项目目录会直接复用；只上传 Notebook 时会克隆本项目。开头配置 `DEVICE`、`DETECTOR_BACKEND`、`DETECTOR_MODEL` 和 `PACKAGE_MANAGER`；视频路径和提取参数在最后一格，加载模型后只修改并运行最后一格即可处理单个或多个视频。
 - **依赖清单**：统一使用 [`extractor/requirements.txt`](extractor/requirements.txt)，包含 SAM Python 依赖、视频处理、Notebook 和下载客户端。先准备适配硬件的 PyTorch/torchvision，再执行 `python -m pip install -r extractor/requirements.txt`，或 `uv pip install --python /path/to/python -r extractor/requirements.txt`。
 - **非 Notebook 环境**：按 [`extractor/README.md` 的终端手动准备步骤](extractor/README.md#不使用-notebook在终端手动准备)完成项目克隆、虚拟环境、CPU/CUDA PyTorch、pip/uv、上游源码与补丁、SAM/检测器权重下载，再运行 CLI。提供 Bash 和 PowerShell 示例。
 
@@ -25,6 +25,8 @@ SAM / DINOv3 源码默认从 Gitee 镜像克隆：[plab/sam-3d-body](https://git
 默认依赖已移除推理未使用的 `xtcocotools`，避免 Linux 源码构建时出现 `No module named 'numpy'`。遇到此错误时，更新 develop 后重新安装；原因见 [依赖安装说明](extractor/README.md#2-安装匹配硬件的-pytorch再安装-requirementstxt)。
 
 SAM 与人物检测器统一使用 `DEVICE`（CLI 为 `--device`），AMD ROCm 环境同样设为 `"cuda"`。已移除独立检测器设备选项和 CPU 降级；若 torchvision 缺少 GPU 版 `torchvision::nms`，加载时会停止并提示安装匹配的 CUDA/ROCm 构建。详见 [ROCm / NMS 说明](extractor/README.md#amd-rocm--torchvision-缺少-gpu-nms)。
+
+Notebook 的 `DETECTOR_BACKEND="auto"` 在 GPU 上默认使用 **Detectron2 / ViTDet-B**，CPU 上使用 torchvision Faster R-CNN。`DETECTOR_MODEL="vitdet_b"` 可改为 Detectron2 的 `faster_rcnn_r50` 或 `mask_rcnn_r50`；均只取人物框交给 SAM。Detectron2 安装单元固定源码版本，不重装 torch/CUDA；安装后重启 kernel。更换后端、模型或权重路径后需重新准备并加载。云端同步时请同时更新 `extractor/person_detector.py` 和 `extractor/requirements.txt`；已有旧工程不会自动更新。完整配置见 [Notebook 检测后端说明](extractor/README.md#notebook-自动检测后端)。
 
 ## 文件结构
 
@@ -69,7 +71,7 @@ pose-blender --blender "/path/to/blender" \
 
 使用 Notebook 时，可在工程根目录执行 `jupyter notebook extractor/video_to_pose.ipynb`，也可单独上传该文件到 Notebook 平台。默认多人模式、GPU；最后一格的 `VIDEOS` 支持单个路径或列表，`MAX_FRAMES=None`、`STRIDE=1`、起点0和无终点默认处理完整视频。试跑时改为 `MAX_FRAMES=30`。同一 kernel 中换视频只需运行最后一格，每次自动创建新的输出目录；整批完成后自动生成 ZIP 并显示下载链接。详见 [Notebook 批量处理说明](extractor/README.md#只运行最后一格单个视频--视频列表)。
 
-最后一格还可重新设置 `MAX_PEOPLE` / `DETECTOR_THRESHOLD`，不会重载模型；`VIDEOS` 的每项可分别指定 `max_people`。固定机位多人可设置 `MULTI_BBOXES=[[x1,y1,x2,y2], ...]`，或逐视频指定 `bboxes`，跳过 Faster R-CNN，按框顺序固定人物ID。检测器只在首次自动检测时加载，手动模式不需要检测器权重；详见 [人数上限与手动框说明](extractor/README.md#不同视频分别设置人数上限和多人固定框)。
+最后一格还可重新设置 `MAX_PEOPLE` / `DETECTOR_THRESHOLD`，不会重载模型；`VIDEOS` 的每项可分别指定 `max_people`。固定机位多人可设置 `MULTI_BBOXES=[[x1,y1,x2,y2], ...]`，或逐视频指定 `bboxes`，跳过检测器，按框顺序固定人物ID。检测器只在首次自动检测时加载，手动模式不需要检测器权重；详见 [人数上限与手动框说明](extractor/README.md#不同视频分别设置人数上限和多人固定框)。
 
 每个手动框可独立设置开始条件：`{"bbox": [...], "start_seconds": 2.5}` 或 `{"bbox": [...], "start_frame": 150}`，达到起点后才运行SAM。时间和从0开始的源帧号均相对原视频；启动前不产生该框的姿态帧/人物目录，ID仍按原列表顺序固定。
 
@@ -116,9 +118,9 @@ CPU 两帧归档已经实测与独立复核：每帧 16 个模型数值字段和
 
 ## Notebook 安装与下载
 
-Notebook 已改为显式命令单元：本项目 git clone、pip/uv 读取 requirements.txt、固定版本 SAM/DINOv3 clone/checkout/apply、ModelScope/Hugging Face CLI 下载模型，以及 PyTorch 命令下载检测器。它保留现有资源校验和下载暂存，原推理与 JSON/NPZ 协议继续使用。
+Notebook 使用显式命令单元：本项目 git clone、pip/uv 读取 requirements.txt、固定版本 Detectron2 clone/checkout/可编辑安装、SAM/DINOv3 clone/checkout/apply、ModelScope/Hugging Face CLI 下载模型，以及独立命令下载选定检测器。构造检测器只读取本地权重；手动框和单人模式无需准备检测器。原推理与 JSON/NPZ 协议继续使用。
 
-重复的 setup_runtime.py 安装、克隆、补丁和下载封装已移除；公共检查集中在 extractor/runtime_checks.py，Notebook 与多人提取器只复用必要的检查和常量。SHA256 对 SAM/MHR 比较完整已知值、对检测器比较官方文件名前缀，配置 YAML 仅记录哈希并检查结构，详细范围见 extractor/README.md。模型与源码许可证、官方源访问权限、系统编译工具和 GPU 驱动仍需按目标环境准备。
+重复的 setup_runtime.py 安装、克隆、补丁和下载封装已移除；公共检查集中在 extractor/runtime_checks.py，检测后端适配集中在 extractor/person_detector.py。SHA256 对 SAM/MHR 比较完整已知值，对 torchvision 权重比较官方文件名前缀；Detectron2 权重首次从固定官方 URL 下载后保存完整哈希来源记录，复用时比较该记录或显式配置的完整哈希。配置 YAML 仅记录哈希并检查结构，详细范围见 extractor/README.md。模型与源码许可证、官方源访问权限、系统编译工具和 GPU 驱动仍需按目标环境准备。
 
 本次改动的验证范围见下方及 extractor/TEST_RESULTS.md；历史 CPU 真实推理记录不能替代本次目标平台全新安装或 GPU 验证。
 
@@ -126,7 +128,7 @@ Notebook 已改为显式命令单元：本项目 git clone、pip/uv 读取 requi
 
 requirements.txt 覆盖固定 SAM 版本 INSTALL.md 的35项Python依赖及视频/Notebook/下载客户端。先准备 PyTorch/torchvision，再用 pip 或 uv 安装；Notebook 会为已有框架包生成版本约束。依赖冲突、系统编译工具和二进制 ABI 仍需在目标环境验证。
 
-多人功能现已实现于 extractor/multi_person.py：torchvision Faster R-CNN person检测、实际框优先/预测框补充的IoU关联、每个track独立JSON1.0，可按需开启NPZ。原Blender driver仍可每次导入一个track的motion.json；新增shared_cli可以创建共享多人场景，但不恢复真实世界位移。Notebook包含显式依赖安装、固定源码克隆、SAM和detector权重下载、GPU/CPU条件补丁及推理单元。GPU端到端与身份保持精度尚未验证。
+多人关联与导出实现于 extractor/multi_person.py：实际框优先/预测框补充的IoU关联、每个track独立JSON1.0，可按需开启NPZ。Notebook通过person_detector.py在GPU默认使用Detectron2 ViTDet-B；CPU默认和现有多人CLI仍使用torchvision Faster R-CNN。原Blender driver仍可每次导入一个track的motion.json；shared_cli可以创建共享多人场景，但不恢复真实世界位移。Notebook包含显式依赖安装、固定源码克隆、SAM和detector权重下载、GPU/CPU条件补丁及推理单元。ViTDet与SAM组合的GPU端到端与身份保持精度尚未验证。
 
 多人测试：`python extractor/tests/test_multi_person.py`。依赖PyAV/NumPy，使用真实临时视频编解码与模拟detector/SAM，不能视为真实模型精度验证。
 
@@ -153,4 +155,4 @@ track-ids应按自己的manifest选择；省略时导入全部有效track，不�
 
 单独交付的 `two_people_overview.blend` 与第1/7帧PNG是演示与验收材料：来源是静态截图拼接的双区域幻灯片，仅0和0.5秒两个推理采样，并非真实连续双人动作视频。角色倒置或悬空保留推理结果，未人为纠正。PNG使用Workbench检查几何和布局，不是照片级灯光材质验收。完整独立结果见 `INDEPENDENT_REVIEW.md`。这些演示文件不嵌入源码ZIP。
 
-当前测试：提取器103项、Blender driver13项。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。
+当前提取器119项测试通过；Blender driver此前13项通过。提供的视频CPU检测/跟踪31帧抽样对照为旧21条track、新18条，仍有主角局部误检；这不是云端57条轨迹的全量复测。多人提取会额外输出逐帧分阶段耗时timings.jsonl。局部框骨架实测未同时满足姿态/位置一致，因此未启用骨架自动合框。详细测试性质和真实视频验证范围见extractor/TEST_RESULTS.md及QA记录。

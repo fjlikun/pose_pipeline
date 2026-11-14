@@ -1,5 +1,12 @@
 # 验证结果
 
+## Notebook GPU 默认 Detectron2 / ViTDet-B（2026-11-14）
+
+- `DETECTOR_BACKEND="auto"` 根据共享 `DEVICE` 选择：GPU 使用 Detectron2 / ViTDet-B，CPU 保留 torchvision Faster R-CNN；支持显式后端和两种其他 Detectron2 配置。固定源码安装与权重下载分开执行，不在构造/推理时联网。已有源码和权重只校验、不覆盖；Detectron2 权重使用完整 SHA256 来源记录或显式完整哈希，不把检查点文件名后缀当作哈希前缀。
+- 提取器 **119 项**测试通过，包括新的 8 项 Detectron2 适配器测试和扩展的 Notebook 准备/批处理测试。验证 RGB 保留、官方测试缩放与原图宽高传递、COCO person=0 筛选、原图 XYXY 框交给 SAM、其他配置的 RGB/BGR 转换，以及人数/阈值更新和模型复用。
+- Notebook 测试使用真实合成视频编解码与输出、模拟 Detectron2/SAM，覆盖 GPU 默认 ViTDet 选择、同批视频复用、手动框/单人绕过检测器、缓存后端/权重/设备不一致时在输出前拒绝；准备测试覆盖当前 kernel 的 pip/uv、固定源码校验、来源记录复用/损坏拒绝、下载失败不发布权重。
+- Notebook schema、全部代码单元编译、空输出与 Git 空白检查通过。本地未下载新增权重，未运行真实 Detectron2/SAM GPU 推理。此前云端 ViTDet 单独检测结果不能代替本次组合 Notebook 的 GPU 端到端验证，仍需在目标 GPU 环境执行。
+
 ## 每个手动框独立开始时间/源帧号（2026-11-13）
 
 - 多人手动框兼容原坐标列表，并支持 `{bbox, start_seconds}` / `{bbox, start_frame}`；每框时间和帧号二选一，省略时0秒启用。Notebook全局MULTI_BBOXES、逐视频bboxes及API均保留开始设置，整批非法配置在输出前拒绝。

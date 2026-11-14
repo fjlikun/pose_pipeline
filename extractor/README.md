@@ -7,9 +7,9 @@
 打开 `video_to_pose.ipynb`，按顺序执行准备和推理单元。也可以只把这个 ipynb 上传到 Notebook 平台：第一个配置单元会判断当前位置，项目不存在时，下一单元执行 `git clone --branch develop --single-branch --depth 1 https://github.com/fjlikun/pose_pipeline.git`。私有仓库需要预先配置 Git 访问权限，也可修改 `PROJECT_URL` / `PROJECT_BRANCH`（默认 develop）。
 
 1. 选择 **Python 3.11（推荐）或 3.12** kernel，先准备匹配硬件的 PyTorch、torchvision。系统需要 Git；`PACKAGE_MANAGER="uv"` 时还需要已安装的 uv。GPU 平台已有的 PyTorch/CUDA 可继续使用。
-2. 在开头的配置单元修改 `DEVICE`、`MULTI_PERSON`，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。SAM 和人物检测器都使用 `DEVICE`，不再单独配置或自动降级检测器设备。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。视频路径、输出位置和采样参数集中在最后一个单元格。
+2. 在开头的配置单元修改 `DEVICE`、`MULTI_PERSON`、`DETECTOR_BACKEND`、`DETECTOR_MODEL`，以及 `PACKAGE_MANAGER="pip"` 或 `"uv"`。默认 GPU 自动检测使用 Detectron2 ViTDet-B，CPU 自动检测使用 torchvision Faster R-CNN。SAM 和人物检测器都使用 `DEVICE`，不再单独配置或自动降级检测器设备。模型和上游源码默认放在项目的 `runtime/`，不依赖启动 Notebook 的目录。视频路径、输出位置和采样参数集中在最后一个单元格。
 3. 执行项目克隆单元，再执行依赖安装单元。依赖统一来自 **`extractor/requirements.txt`**；命令使用 `sys.executable -m pip`，或 `uv pip --python sys.executable`，安装到当前 kernel。Notebook 会生成 `runtime/torch-constraints.txt`，固定现有 torch/CUDA 相关包版本；其他包仍由 pip/uv 正常解析，可能调整版本，建议使用项目专用环境。
-4. 安装完成后重启 kernel，重新执行配置和项目定位单元，跳过依赖安装单元继续。SAM/DINOv3 单元会执行固定 commit 的 `git clone`、`checkout` 和 `git apply`。`DEVICE="cpu"` 时自动追加 CPU 设备补丁。
+4. 安装完成后重启 kernel，重新执行配置和项目定位单元，跳过依赖安装单元继续。自动检测选用 Detectron2 时，执行其固定版本源码克隆与可编辑安装单元，完成后再次重启 kernel，再重跑配置和项目定位并跳过安装单元。SAM/DINOv3 单元会执行固定 commit 的 `git clone`、`checkout` 和 `git apply`。`DEVICE="cpu"` 时自动追加 CPU 设备补丁。
 5. 执行 SAM 模型下载单元。默认 ModelScope，可改 `MODEL_SOURCE="huggingface"`。官方 Hugging Face 需事先获准访问，并通过终端 `hf auth login` 或平台 secret 环境变量认证；不要把 token 写进单元格。请先阅读模型与来源的适用许可证。
 6. 自动多人模式执行检测器权重下载单元；只用多人手动框时可跳过，单人模式自动跳过。执行本地校验与模型加载单元；该单元只加载 SAM，不需要视频或检测器权重。自动检测器在最后一格首次需要时加载，之后复用。
 7. 在最后一个单元格修改 `VIDEOS`、`MAX_PEOPLE`、`DETECTOR_THRESHOLD` 和 `MULTI_BBOXES` 后运行。支持单个路径或按视频分别设置的列表，默认逐帧处理完整视频；试跑可将 `MAX_FRAMES` 改为 `30`。模型已加载且 kernel 未重启时，换视频、改人数上限或手动框只需修改并运行最后一格。
@@ -17,6 +17,24 @@
 每个准备单元执行时才会安装/联网，不再通过 RUN_INSTALL/RUN_GIT_SYNC 等开关调用安装封装。所有命令以 `subprocess.run([...], check=True)` 执行，当前命令失败会停止该单元。不要在错误未解决时继续后续单元。
 
 项目和上游源码目录存在时直接校验，不 pull/reset；已有模型和检测器权重只校验，不覆盖。下载先在临时目录完成并校验，成功后发布；ModelScope 单元启用客户端内置8路大文件并行。Notebook 每次提取自动创建新的输出目录。develop 分支不跟踪 MP4，且不包含 Git LFS 资源规则；请自行设置可用的视频路径。Notebook 仅在新目录浅克隆指定分支，已有工程不自动切换分支。本地视频与运行结果由 .gitignore 排除，不会因这次资源剥离而删除。
+
+### Notebook 自动检测后端
+
+开头配置默认如下：
+
+```python
+DEVICE = "cuda"
+DETECTOR_BACKEND = "auto"  # GPU: detectron2；CPU: torchvision
+DETECTOR_MODEL = "vitdet_b"
+```
+
+GPU 的默认检测器为 **Detectron2 ViTDet-B**，还可将 `DETECTOR_MODEL` 改为 `faster_rcnn_r50` 或 `mask_rcnn_r50`。三种 Detectron2 配置均只输出人物框供 SAM-3D-Body 使用，不执行 mask 分支。`DETECTOR_BACKEND="torchvision"` 可显式使用旧 Faster R-CNN；`DEVICE="cpu"` 且后端为 `auto` 时也使用它。缺少 GPU、Detectron2 或 GPU NMS 时会报错，不自动更换后端或设备。
+
+Detectron2 安装单元将官方源码固定到 `247691a1c292654867deb35cabb27f18d75a1363`，默认目录为 `runtime/detectron2`。它检查已有 checkout 的 commit、origin 和受跟踪文件，使用当前 kernel 的 pip/uv 执行 `--no-build-isolation --no-deps -e` 安装；依赖由前面的 requirements 单元准备。编译需要与目标 PyTorch/CUDA 匹配的工具链，安装后重启 kernel。CPU 自动模式和单人模式自动跳过此单元，只用多人手动框时可手动跳过。
+
+GPU 自动模式默认权重路径为 `runtime/detector/detectron2_vitdet_b.pkl`，CPU 自动模式为原 `.pth` 路径。只有检测器下载单元会下载权重，模型构造和推理只读本地文件。ViTDet 对 RGB 图像使用官方 1024 测试缩放/模型方形填充，筛选 COCO `person=0`，并将原图像素 XYXY 框传给 SAM；torchvision 的人物类别仍为 1。元数据记录实际后端、配置、源码版本、权重哈希及预处理。
+
+模型只在首次自动检测时加载，改人数上限或阈值只需重跑最后一格。切换后端、模型、设备或权重/源码路径后，重新执行相关准备及 SAM 模型加载单元以清除旧检测器缓存；最后一格会拒绝复用不匹配的检测器。手动框模式完全跳过检测器。同步到云端时需同时更新 Notebook、`person_detector.py` 和 `requirements.txt`；已有工程目录不会自动拉取这些文件。当前 119 项离线测试通过，ViTDet 与 SAM 组合的完整 GPU 推理仍需在目标环境验证。
 
 ### 只运行最后一格：单个视频 / 视频列表
 
@@ -59,7 +77,7 @@ MULTI_BBOXES = None  # None 为自动检测
 MULTI_BBOXES = [[100, 100, 800, 1000], [900, 100, 1600, 1000]]
 ```
 
-框列表第1/2项始终对应 track 1/2，跳过 Faster R-CNN、NMS 和 IoU 身份关联。手动框可以重叠，数量由列表长度决定，不受 `MAX_PEOPLE` 截断。SAM 某帧无结果时保留同一 ID 并记录缺失，不新建 ID。手动框越界、退化、为空或含非有限值会在输出前报错。
+框列表第1/2项始终对应 track 1/2，跳过检测器、NMS 和 IoU 身份关联。手动框可以重叠，数量由列表长度决定，不受 `MAX_PEOPLE` 截断。SAM 某帧无结果时保留同一 ID 并记录缺失，不新建 ID。手动框越界、退化、为空或含非有限值会在输出前报错。
 
 各框可以独立指定开始秒数或源帧号，亦可与原坐标列表混用：
 
@@ -142,7 +160,7 @@ Windows 的 uv 命令将 Python 路径改为 `.venv\Scripts\python.exe`。如果
 
 Linux 安装旧版清单时，`xtcocotools` 可能报 `ModuleNotFoundError: No module named 'numpy'`。它的源码构建脚本会导入 NumPy，但没有声明对应构建依赖；pip/uv 的隔离构建环境无法读取当前环境已装的 NumPy，所以先安装 NumPy 或调整 requirements 行顺序也不保证解决。更新到 develop 最新版本，再运行上面的 pip/uv 命令或重新执行 Notebook 安装单元即可，无需安装 `xtcocotools` 或全局关闭构建隔离。
 
-本工程使用 torchvision 检测器，不需要 Detectron2、MoGe 或 SAM3。ModelScope 1.29.2 CLI 仍导入 pkg_resources，因此清单固定 `setuptools<81`。某些平台的 pycocotools 等需要本机编译工具和匹配的 NumPy ABI，单个 requirements 文件不能代替系统 C/C++ 编译器。构建失败时应先按对应包说明准备工具链。`ffmpeg` Python 包也不提供系统 ffmpeg 可执行文件；只有后续需要合成 MP4 时才另行安装系统 ffmpeg。
+Notebook 的 GPU 自动检测需要固定版本 Detectron2，按前文单元安装；CPU 默认和下述旧 CLI 使用 torchvision 检测器，无需 Detectron2。MoGe 和 SAM3 不在本流程中。ModelScope 1.29.2 CLI 仍导入 pkg_resources，因此清单固定 `setuptools<81`。某些平台的 pycocotools 等需要本机编译工具和匹配的 NumPy ABI，单个 requirements 文件不能代替系统 C/C++ 编译器。构建失败时应先按对应包说明准备工具链。`ffmpeg` Python 包也不提供系统 ffmpeg 可执行文件；只有后续需要合成 MP4 时才另行安装系统 ffmpeg。
 
 ### 3. 克隆固定版本的 SAM / DINOv3 并应用补丁
 
@@ -236,15 +254,16 @@ python -c "import sys; sys.path.insert(0, 'extractor'); from runtime_checks impo
 | `model.ckpt` | 比较完整 SHA256（64个十六进制字符） | 此前实际验证的固定权重，值见 `runtime_checks.KNOWN_HASHES` |
 | `assets/mhr_model.pt` | 比较完整 SHA256（64个十六进制字符） | 此前实际验证的固定 MHR 文件 |
 | 检测器 `.pth` | 下载及 Notebook 复用时，核对 torchvision 官方枚举 URL 文件名中的 SHA256 前缀；同时可计算完整值用于记录 | `download.pytorch.org` 的官方权重 URL |
+| Detectron2 `.pkl` | 首次下载后保存完整 SHA256、URL、模型和大小到同名 `.provenance.json`；复用时比较记录，或使用显式 `DETECTOR_SHA256` 完整值 | `dl.fbaipublicfiles.com` 的固定官方 URL；本地记录用于后续完整性校验，不是发布者签名 |
 | `model_config.yaml` | 计算并记录完整 SHA256；没有已知预期值可供比对；另用 safe_load 检查 MODEL 映射 | 下载得到的配置本身 |
 
 哈希用于识别文件版本和发现损坏，不证明第三方来源具有官方身份。SAM/DINOv3 源码通过固定 Git commit 和已知补丁检查，不做逐文件 SHA256 比对。当前 pip/uv 安装没有旧版自定义 wheel 哈希审批流程。多人 CLI 在加载检测器时记录完整权重哈希，但单独传入 CLI 的文件不会自动获得 Notebook 下载单元的官方前缀校验。
 
 `runtime_checks.py` 仅包含常量与只读的哈希/文件/环境检查，不安装、克隆、应用补丁或下载。准备操作只在 Notebook 的命令单元以及本 README 的终端命令中执行。
 
-### 5. 多人模式下载检测器权重
+### 5. 现有 torchvision CLI 的多人检测器权重
 
-下面在项目根目录执行 Python 命令，读取当前 torchvision 的官方权重枚举并通过 PyTorch 下载。先阅读 [torchvision 预训练权重条款](https://github.com/pytorch/vision#pre-trained-model-license)。单人模式跳过；该终端示例用于新的目标路径，已有文件请先校验，Notebook 单元提供暂存及不覆盖检查。
+下面供现有 `multi_person.py` CLI 使用，在项目根目录执行 Python 命令，读取当前 torchvision 的官方权重枚举并通过 PyTorch 下载。Notebook 的 GPU Detectron2 后端请使用前文安装和下载单元。先阅读 [torchvision 预训练权重条款](https://github.com/pytorch/vision#pre-trained-model-license)。单人模式跳过；该终端示例用于新的目标路径，已有文件请先校验，Notebook 单元提供暂存及不覆盖检查。
 
 ```bash
 python -c "from pathlib import Path; import torch; from torchvision.models.detection import FasterRCNN_ResNet50_FPN_V2_Weights as W; url=W.COCO_V1.url; p=Path('runtime/detector/fasterrcnn_resnet50_fpn_v2_coco.pth'); p.parent.mkdir(parents=True, exist_ok=True); assert not p.exists(), 'Target already exists'; torch.hub.download_url_to_file(url, str(p), hash_prefix=Path(url).stem.rsplit('-', 1)[1])"
@@ -353,9 +372,11 @@ with Path('requirements-resolved.txt').open('x') as report:  # 已存在则拒�
 
 ### 检测器和显式下载
 
+Notebook 通过 `person_detector.py` 选择检测器，GPU 自动模式默认 `Detectron2PersonDetector` / ViTDet-B，支持另两种 Detectron2 配置。适配器保留现有 `detect(rgb)`、`configure(...)` 和 metadata 接口，原图人物框直接进入既有跟踪与 SAM 流程。下面的 torchvision 检测器仍用于 CPU 自动模式、显式选择及现有多人 CLI；本次没有改变 CLI 的后端参数。
+
 `TorchvisionPersonDetector` 使用现有 torchvision 的 Faster R-CNN ResNet50 FPN v2 / COCO_V1，仅保留label=1的人，默认阈值0.7、最多20人（可调），torchvision模型内部自带NMS。构造模型使用 weights=None、weights_backbone=None，不触发下载；只读显式本地权重，torch.load(weights_only=True)。默认GPU，没有可用CUDA时明确失败，不默默切CPU。
 
-Notebook有独立检测器下载cell。官方权重URL取自已装torchvision的weight enum，只允许download.pytorch.org的HTTPS域，并验证文件名hash前缀、报告完整SHA256。已有文件匹配则复用、不匹配拒绝；下载/复制中断可能留下partial文件，下一次hash检查会拒绝，需人工处理或选择新路径，不能盲目绕过校验。模型下载与包安装相互独立，不重装torch/CUDA。SAM与检测器同时占显存，需要足够资源；OOM视为错误，不当作无人。
+Notebook有独立检测器下载cell。torchvision URL取自已装包的weight enum，只允许download.pytorch.org的HTTPS域，并验证文件名hash前缀；Detectron2 使用适配器内的固定官方 HTTPS URL，保存完整 SHA256 来源记录，复用时验证记录或显式完整哈希。外部已有 `.pkl` 无记录时需提供已核实的 `DETECTOR_SHA256`，或选择新路径下载。已有文件匹配则复用、不匹配拒绝；下载/复制中断可能留下不完整文件，下一次检查会拒绝，需人工处理或选择新路径。模型下载与包安装相互独立，不重装torch/CUDA。SAM与检测器同时占显存，需要足够资源；OOM视为错误，不当作无人。
 
 代码遵循[torchvision BSD-3-Clause许可](https://github.com/pytorch/vision/blob/main/LICENSE)，但[预训练模型可能适用训练数据的独立条款](https://github.com/pytorch/vision#pre-trained-model-license)。不要把代码许可自动等同于所有权重用途的许可。检测器下载通过独立准备单元显式执行；无内置token。
 
@@ -370,7 +391,7 @@ Notebook 只使用一个 `DEVICE`，CLI 对应 `--device`，同时决定 SAM 和
 DEVICE = "cuda"
 ```
 
-CLI 在原命令中使用 `--device cuda`。自动 CLI 先检查检测器再加载 SAM；Notebook 先加载 SAM，在最后一格首次自动检测时加载检测器。小输入 NMS 检查在 Faster R-CNN 权重分配/加载前完成；手动框模式不加载检测器、不检查其 NMS。自动模式GPU算子缺失时停止并提示修复环境，不切CPU，也不修改全局算子。
+CLI 在原命令中使用 `--device cuda`。自动 CLI 先检查检测器再加载 SAM；Notebook 先加载 SAM，在最后一格首次自动检测时加载检测器。小输入 NMS 检查在 Detectron2/torchvision 检测器权重分配/加载前完成；手动框模式不加载检测器、不检查其 NMS。自动模式GPU算子缺失时停止并提示修复环境，不切CPU，也不修改全局算子。
 
 统一设备配置不会补齐缺失的 GPU 算子。AMD 环境需要与 PyTorch 和 ROCm 运行时匹配的 torchvision GPU 构建；`torch.cuda.is_available()` 为 True 只说明 PyTorch 可访问 GPU。应按目标环境的 `torch.__version__`、`torchvision.__version__` 和 `torch.version.hip` 选择对应构建，修复环境后重启 kernel。导出的 detector metadata 会记录实际 `device`、torch/torchvision 版本及 `rocm_version`，模型加载时也会打印相关信息。只有统一设为 `DEVICE="cpu"` 时，才按前文给 SAM 应用 CPU 补丁。
 

@@ -15,6 +15,7 @@ from unittest.mock import patch
 EXTRACTOR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EXTRACTOR))
 import runtime_checks as checks
+import person_detector
 
 NOTEBOOK = json.loads((EXTRACTOR / 'video_to_pose.ipynb').read_text(encoding='utf-8'))
 CELLS = {c['id']: ''.join(c['source']) for c in NOTEBOOK['cells'] if c['cell_type'] == 'code'}
@@ -223,6 +224,7 @@ class NotebookSetupTests(unittest.TestCase):
         self.assertEqual((self.ns['CHECKPOINT_DIR'] / 'model.ckpt').read_bytes(), before)
 
     def test_detector_command_checks_hash_and_reuses_existing_file(self):
+        self.ns['DETECTOR_BACKEND'] = 'torchvision'
         payload = b'fixture detector'
         prefix = hashlib.sha256(payload).hexdigest()[:8]
         enum = types.SimpleNamespace(COCO_V1=types.SimpleNamespace(url=f'https://download.pytorch.org/models/detector-{prefix}.pth'))
@@ -245,6 +247,110 @@ class NotebookSetupTests(unittest.TestCase):
             self.execute('detector-download')
         run.assert_not_called()
         self.assertFalse(self.ns['DETECTOR_WEIGHTS'].exists())
+
+    def test_gpu_default_is_vitdet_and_cpu_default_uses_legacy_weights(self):
+        self.assertEqual(self.ns['DEVICE'], 'cuda')
+        self.assertEqual(self.ns['DETECTOR_BACKEND'], 'auto')
+        self.assertEqual(self.ns['DETECTOR_MODEL'], 'vitdet_b')
+        self.assertEqual(self.ns['DETECTOR_WEIGHTS'].name, 'detectron2_vitdet_b.pkl')
+        cpu = {}
+        source = CELLS['setup-config'].replace('DEVICE = "cuda"', 'DEVICE = "cpu"')
+        with redirect_stdout(io.StringIO()), patch.object(Path, 'cwd', return_value=self.project):
+            exec(compile(source, 'notebook:cpu-config', 'exec'), cpu)
+        self.assertEqual(cpu['DETECTOR_WEIGHTS'].name, 'fasterrcnn_resnet50_fpn_v2_coco.pth')
+
+    def test_detectron2_source_install_targets_kernel_for_both_managers(self):
+        for manager in ('pip', 'uv'):
+            with self.subTest(manager=manager):
+                self.ns['PACKAGE_MANAGER'] = manager
+                self.ns['DETECTRON2_REPO'] = self.root / manager / 'detectron2 source'
+
+                def run(args, **kwargs):
+                    self.assertTrue(kwargs['check'])
+                    if args[1] == 'clone':
+                        (Path(args[-1]) / '.git').mkdir(parents=True)
+
+                def output(args, **kwargs):
+                    if 'rev-parse' in args:
+                        return person_detector.DETECTRON2_COMMIT
+                    if 'get-url' in args:
+                        return person_detector.DETECTRON2_URL
+                    return ''
+
+                with patch.object(subprocess, 'run', side_effect=run) as commands, \
+                        patch.object(subprocess, 'check_output', side_effect=output), \
+                        patch.object(shutil, 'which', return_value='uv'):
+                    self.execute('detectron2-install')
+                    self.execute('detectron2-install')
+                calls = [call.args[0] for call in commands.call_args_list]
+                self.assertEqual(sum(args[:2] == ['git', 'clone'] for args in calls), 1)
+                install = calls[-1]
+                self.assertIn('--no-deps', install)
+                self.assertIn('--no-build-isolation', install)
+                self.assertIn('-e', install)
+                if manager == 'pip':
+                    self.assertEqual(install[:4], [sys.executable, '-m', 'pip', 'install'])
+                else:
+                    self.assertEqual(install[:5], ['uv', 'pip', 'install', '--python', sys.executable])
+                self.assertFalse(any('reset' in args or 'pull' in args for args in calls))
+
+    def test_detectron2_preparation_skips_cpu_or_single_and_refuses_source_edits(self):
+        for settings in ({'DEVICE': 'cpu'}, {'DEVICE': 'cuda', 'MULTI_PERSON': False}):
+            with patch.dict(self.ns, settings), patch.object(subprocess, 'run') as run:
+                self.execute('detectron2-install')
+            run.assert_not_called()
+        (self.ns['DETECTRON2_REPO'] / '.git').mkdir(parents=True)
+        with patch.object(subprocess, 'check_output', side_effect=[person_detector.DETECTRON2_COMMIT, 'edited']), \
+                patch.object(subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'tracked files modified'):
+                self.execute('detectron2-install')
+        run.assert_not_called()
+
+    def test_detectron2_download_records_full_digest_reuses_and_rejects_changes(self):
+        payload = b'official-checkpoint-fixture'
+        def download(args, **kwargs):
+            Path(args[-1]).write_bytes(payload)
+        with patch.object(subprocess, 'run', side_effect=download) as run:
+            self.execute('detector-download')
+            self.execute('detector-download')
+        self.assertEqual(run.call_count, 1)
+        record_path = person_detector.detector_asset_record(self.ns['DETECTOR_WEIGHTS'])
+        original = record_path.read_bytes()
+        record = json.loads(original)
+        self.assertEqual(record['sha256'], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(record['model'], 'vitdet_b')
+        self.assertNotIn('hash_prefix', run.call_args.args[0][2])
+        self.ns['DETECTOR_WEIGHTS'].write_bytes(b'corrupted')
+        with patch.object(subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'integrity check failed'):
+                self.execute('detector-download')
+        run.assert_not_called()
+        self.assertEqual(record_path.read_bytes(), original)
+
+    def test_external_detectron2_weights_require_a_known_complete_digest(self):
+        path = self.ns['DETECTOR_WEIGHTS']
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'existing')
+        with patch.object(subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'provenance record'):
+                self.execute('detector-download')
+            self.ns['DETECTOR_SHA256'] = hashlib.sha256(b'existing').hexdigest()
+            self.execute('detector-download')
+            self.ns['DETECTOR_SHA256'] = '0' * 64
+            with self.assertRaisesRegex(RuntimeError, 'SHA256 mismatch'):
+                self.execute('detector-download')
+        run.assert_not_called()
+        self.assertEqual(path.read_bytes(), b'existing')
+
+    def test_detectron2_download_failure_never_publishes_partial_checkpoint(self):
+        def fail(args, **kwargs):
+            Path(args[-1]).write_bytes(b'partial')
+            raise subprocess.CalledProcessError(1, args)
+        with patch.object(subprocess, 'run', side_effect=fail):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.execute('detector-download')
+        self.assertFalse(self.ns['DETECTOR_WEIGHTS'].exists())
+        self.assertFalse(person_detector.detector_asset_record(self.ns['DETECTOR_WEIGHTS']).exists())
 
 
 
